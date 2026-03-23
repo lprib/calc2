@@ -23,9 +23,7 @@
     (multiple-value-bind (new-i res) (funcall parser i)
       (case res
         (:fail (values i :fail))
-        (otherwise (cons res (cons i new-i)))))))
-    
-  
+        (otherwise (values new-i (cons res (cons i new-i))))))))
 
 ; consume while predicate matches each char
 (defun predicate-chars (predicate)
@@ -135,7 +133,7 @@
                 :while (member (char *input* i) '(#\space #\tab #\newline))
                 :do (incf i))
           (values i nil)))))
-    
+
 ; parse "in" surrounded by before and after. return results from "in" only
 (defun surrounded (before in &optional (after before))
   (map-res (seq before in after) #'second))
@@ -199,39 +197,40 @@
           (+ natural (natural->fraction-part fractional))
           (cdr (assoc si *si-prefixes*)))))))
 
-
 #+nil
 (parse (si-shorthand) "1k2")
 #+nil
 (parse (natural-fast) "")
 
-
 (defun number-literal ()
-  (alt 
-    (si-shorthand)
-    (prefixed-radix "0x" 16)
-    (prefixed-radix "0b" 2)
-    (prefixed-radix "0d" 10)
-    (default-int)))
+  (srcmap
+    (alt
+      (si-shorthand)
+      (prefixed-radix "0x" 16)
+      (prefixed-radix "0b" 2)
+      (prefixed-radix "0d" 10)
+      (default-int))))
 
 #+nil
 (parse (number-literal) "0x10200")
 
-
 (defun assoc-precedence (infix-parser next-parser-thunk &key (assoc-fn #'l-assoc))
+  "
+  Parse an associative precedence operation. Will return results in the form
+  ((op src-start . src-end) arg1 arg2)
+  i.e. it automatically wraps the infix-parser in a srcmap
+  "
   (lambda (i)
     (let* ((next-parser (funcall next-parser-thunk))
-           (appended-op (seq infix-parser next-parser))
+           (appended-op (seq (srcmap infix-parser) next-parser))
            (parser (seq next-parser (opt (many appended-op)))))
         (funcall (map-res parser assoc-fn) i))))
 
 (defun l-assoc (form)
   "
-  convert (left ((op right) (op right)...))
-  into ((left op right) op right)
-
-  e.g. (1 ((+ 2) (+ 3))) ; this is what the parser spits out
-  to: ((1 + 2) + 3) ; the desired parse tree
+  Left-associative transformation.
+  from: (1 ((+ 2) (+ 3))) ; BNF structure 'left { op right }'
+  to: ((1 + 2) + 3) ; desired parse tree
   "
   (destructuring-bind (left appended-ops) form
     (if (null appended-ops)
@@ -244,7 +243,7 @@
           :initial-value left))))
 
 #+nil
-(parse (assoc-precedence (charset "+-") #'number-literal) "1+2+3")
+(parse (assoc-precedence (charset "+-") #'number-literal) "99+59")
 
 (defun primary ()
   (labels ((expr-deferred (i) (funcall (expr) i))) ; break recursion thunk
@@ -276,7 +275,7 @@
              (lambda (i) (funcall (power) i))))) ; break recursion thunk
     (lambda (res)
       (if (second res)
-          ; '(1 (^ 2)): caadr=^ car=1 cadadr=2
+          ; '(1 (^ 2)): caadr=^ car=1 cadadr=2. Flatten parse tree to AST
           (list (caadr res) (car res) (cadadr res))
           (car res)))))
 
@@ -287,12 +286,11 @@
   (map-res
     (seq (expr) (opt (many (preceded (surrounded (whitespace) (lit ",")) (expr)))))
     (lambda (res) (cons (car res) (cadr res)))))
-      
 
 (defun fn-call ()
   (map-res
     (seq
-      (predicate-chars #'alphanumericp)
+      (srcmap (predicate-chars #'alphanumericp))
       (surrounded
         (surrounded (whitespace) (lit "("))
         (arglist)
@@ -301,14 +299,14 @@
       (cons (car res) (cadr res)))))
 
 (defun var-or-symbol ()
-  (predicate-chars #'alphanumericp))
+  (srcmap (predicate-chars #'alphanumericp)))
 
 #+nil
 (parse (arglist) "1, 2+2, 3")
 
 #+nil
 (parse (expr) "sin(3+3*2)*32")
-(parse (expr) "u8(32)")
+(parse (expr) "u8(x)")
 
 #+nil
 (parse (srcmap (expr)) "32 poo")
