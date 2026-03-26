@@ -624,9 +624,17 @@
     (make-fix-builtin-assoc t 16)
     (make-fix-builtin-assoc t 32)
     (make-fix-builtin-assoc t 64)
-    (cons "float" (make-builtin :fn #'float-cast :coerce-args nil :unwrap-args nil))))
-
+    (cons "float" (make-builtin :fn #'float-cast :coerce-args nil :unwrap-args nil))
+    (cons #\& (make-builtin :fn #'logand :coerce-args t :unwrap-args t))
+    (cons #\| (make-builtin :fn #'logior :coerce-args t :unwrap-args t))
+    (cons "xor" (make-builtin :fn #'logxor :coerce-args t :unwrap-args t))
+    (cons ">>" (make-builtin :fn (lambda (a b) (ash a (- b)))
+                             :coerce-args t :unwrap-args t))
+    (cons "<<" (make-builtin :fn #'ash :coerce-args t :unwrap-args t))))
 
 
 #+nil
-(eval-expr-str "(u8(255) + u8(1))")
+(eval-expr-str "xor(u8(0x0f), u8(0xaa))")
+
+#+nil
+(parse (expr)"16 << 2")
