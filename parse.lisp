@@ -156,7 +156,7 @@
   (lambda (i)
     (let ((ws-chars '(#\space #\tab #\newline)))
       (if (or
-            (> i (length *input*))
+            (>= i (length *input*))
             (and required (not (member (char *input* i) ws-chars))))
           (values i :fail)
           (progn
@@ -169,8 +169,8 @@
 (defun surrounded (before in &optional (after before))
   (map-res (seq before in after) #'second))
 
-; parse parser preceded by before, return results from parser only
-(defun preceded (before parser)
+; parse parser preceeded by before, return results from parser only
+(defun preceeded (before parser)
   (map-res (seq before parser) #'second))
 
 ; parse parser succeeded by after, return results from parser only
@@ -287,6 +287,7 @@
       (number-literal)
       (surrounded (lit "(") (surrounded (whitespace) #'expr-deferred) (lit ")"))
       (fn-call)
+      (noparen-fn-call)
       (var-or-symbol))))
 
 (defun expr ()
@@ -325,7 +326,7 @@
 
 (defun arglist ()
   (map-res
-    (seq (expr) (opt (many (preceded (surrounded (whitespace) (lit ",")) (expr)))))
+    (seq (expr) (opt (many (preceeded (surrounded (whitespace) (lit ",")) (expr)))))
     (lambda (res) (cons (car res) (cadr res)))))
 
 (defun fn-call ()
@@ -339,12 +340,26 @@
     (lambda (res)
       (cons (car res) (cadr res)))))
 
+(defun noparen-fn-call ()
+  (map-res
+    (seq
+      (srcmap (predicate-chars #'alphanumericp))
+      (many
+        (preceeded (whitespace :required t) (expr))))
+    (lambda (res)
+      (cons (car res) (cadr res)))))
+
 (defun var-or-symbol ()
   (srcmap (predicate-chars #'alphanumericp)))
 
 
-(parse (expr) "2.3") ; -> this correctly parses to 2.3 (float)
-(parse (expr) "2.3+4") ; -> this parses to 2 (int)
+#+nil
+(parse (expr) "3 xor 3")
+#+nil
+(parse (expr) "sin 4 4")
+
+#+nil
+(parse (expr) "out hex")
 
 #+nil
 (parse (arglist) "1, 2+2, 3")
