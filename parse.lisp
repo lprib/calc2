@@ -1,6 +1,6 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-; Combinators
+; COMBINATORS
 
 (defparameter *input* "")
 
@@ -123,7 +123,7 @@
 
 ; dirty ass implementation, (recognise) and just pass the result to
 ; (read-from-string), but oh well
-(defun double-flt() 
+(defun double-flt()
    (let* ((digits (many (charset "0123456789")))
           (double-parser
             (recognise
@@ -151,17 +151,19 @@
 (parse (double-flt) "1.509e8")
 
 ; always succeed, skip whitespace
+; if required, require there to be some whitespace
 (defun whitespace (&key required)
   (lambda (i)
-    (if (or
-          (> i (length *input*))
-          (and required (not (member (char *input* i) '(#\space #\tab #\newline)))))
-        (values i :fail)
-        (progn
-          (loop :while (< i (length *input*))
-                :while (member (char *input* i) '(#\space #\tab #\newline))
-                :do (incf i))
-          (values i nil)))))
+    (let ((ws-chars '(#\space #\tab #\newline)))
+      (if (or
+            (> i (length *input*))
+            (and required (not (member (char *input* i) ws-chars))))
+          (values i :fail)
+          (progn
+            (loop :while (< i (length *input*))
+                  :while (member (char *input* i) ws-chars)
+                  :do (incf i))
+            (values i nil))))))
 
 ; parse "in" surrounded by before and after. return results from "in" only
 (defun surrounded (before in &optional (after before))
@@ -176,7 +178,7 @@
   (map-res (seq parser after) #'first))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-; Parser
+; PARSER
 
 (defparameter *assumed-radix* 10)
 
@@ -362,7 +364,7 @@
 (parse (srcmap (expr)) "32 poo")
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-; Value/Type system
+; VALUE/TYPE SYSTEM
 
 (defclass val ()
   ((inner
@@ -370,6 +372,7 @@
      :initform (error "required")
      :accessor inner)))
 
+;;;; FIXED INTEGER ;;;;
 (defclass fix (val)
   ((signed
      :initarg :signed
@@ -381,35 +384,42 @@
      :initform (error "required")
      :accessor bitwidth)))
 
-(defclass flt (val) ())
+; accept :b or :big as bigint for compactness
+(defun fix (n signed bitwidth)
+  (make-instance 'fix :inner n :signed signed
+                 :bitwidth (case bitwidth (:b :big) (t bitwidth))))
 
 (defmethod initialize-instance :after ((obj fix) &key)
   (setf (inner obj) (coerce (inner obj) 'integer)))
 
-(defmethod initialize-instance :after ((obj flt) &key)
-  (setf (inner obj) (coerce (inner obj) 'double-float)))
-
-(defmethod print-object ((obj fix) stream)
-  (format stream "~d:~a" (inner obj) (typename obj)))
-
-(defmethod print-object ((obj flt) stream)
-  (format stream "~f:~a" (inner obj) (typename obj)))
-
-(defgeneric typename (n))
-(defmethod typename ((n flt)) "float")
 (defmethod typename ((n fix))
   (case (bitwidth n)
     (:big "bigint")
     (otherwise (format nil "~c~d" (if (signed-p n) #\i #\u) (bitwidth n)))))
 
+(defmethod print-object ((obj fix) stream)
+  (format stream "~d:~a" (inner obj) (typename obj)))
+
+;;;; FLOAT ;;;;
+(defclass flt (val) ())
+
+(defun flt (n) (make-instance 'flt :inner n))
+
+(defmethod initialize-instance :after ((obj flt) &key)
+  (setf (inner obj) (coerce (inner obj) 'double-float)))
+
+(defmethod typename ((n flt)) "float")
+
+(defmethod print-object ((obj flt) stream)
+  (format stream "~f:~a" (inner obj) (typename obj)))
+
+;;;; TYPE SYSTEM ;;;;
 (defgeneric same-type-new-value (old new-value))
 (defmethod same-type-new-value ((old fix) new-value)
-  (make-instance 'fix
-                 :inner new-value
-                 :signed (signed-p old)
-                 :bitwidth (bitwidth old)))
+  (fix new-value (signed-p old) (bitwidth old)))
+
 (defmethod same-type-new-value ((old flt) new-value)
-  (make-instance 'flt :inner new-value))
+  (flt new-value))
 
 (define-condition overflow (warning)
   ((value :initarg :value :reader value)a
@@ -463,16 +473,16 @@
 ;        =bigint if either are bigint
 (defgeneric unify (a b))
 (defmethod unify ((a fix) (b flt))
-  (values (make-instance 'flt :inner (coerce (inner a) 'double-float)) b))
+  (values (flt (coerce (inner a) 'double-float)) b))
 (defmethod unify ((a flt) (b fix))
-  (values a (make-instance 'flt :inner (coerce (inner b) 'double-float))))
+  (values a (flt (coerce (inner b) 'double-float))))
 (defmethod unify ((a flt) (b flt))
   (values a b))
 (defmethod unify ((a fix) (b fix))
   (let ((max-bw (max-bitwidth (bitwidth a) (bitwidth b)))
         (either-signed (or (signed-p a) (signed-p b))))
-    (let* ((a (make-instance 'fix :inner (inner a) :signed either-signed :bitwidth max-bw))
-           (b (make-instance 'fix :inner (inner b) :signed either-signed :bitwidth max-bw))
+    (let* ((a (fix (inner a) either-signed max-bw))
+           (b (fix (inner b) either-signed max-bw))
            (context (format nil "when coercing to ~a" (typename a))))
       (check-and-correct-overflow a context)
       (check-and-correct-overflow b context)
@@ -482,8 +492,8 @@
 #+nil
 (multiple-value-list
   (unify
-    (make-instance 'fix :inner 69 :signed t :bitwidth 8)
-    (make-instance 'fix :inner 129 :signed nil :bitwidth 8)))
+    (fix 69 t 8)
+    (fix 129 nil 8)))
 
 #+nil
 (multiple-value-list
@@ -497,13 +507,26 @@
     (make-instance 'flt :inner 1.4d0)
     (make-instance 'fix :inner 129 :signed nil :bitwidth 8)))
 
+;;;; SERIALIZE/DESERIALIZE ;;;;
+
+(defmethod to-readable-form ((n fix))
+  (list (inner n) (signed-p n) (case (bitwidth n) (:big :b) (t (bitwidth n)))))
+
+(defmethod to-readable-form ((n flt))
+  (list (inner n)))
+
+(defun from-readable-form (form)
+  (etypecase (car form)
+    (integer (destructuring-bind (val signed bitwidth) form
+               (fix val signed bitwidth)))
+    (float (flt (car form)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-; Evaluator
+; EVALUATOR
 
 
 (defparameter *default-numeric-type*
-  (make-instance 'fix :inner 0 :signed t :bitwidth :big))
+  (fix 0 t :big))
 
 (defun eval-atom (atom-expr)
   (let ((val (car atom-expr)))
@@ -511,7 +534,7 @@
       ; ints become default type (even if its float)
       (integer (same-type-new-value *default-int-type* val))
       ; floats must always be floats
-      (float (make-instance 'flt :inner val)))))
+      (float (flt val)))))
 
 #+nil
 (eval-atom '(1))
@@ -572,6 +595,7 @@
       (:fail :fail)
       (otherwise (eval-expr res)))))
 
+#+nil
 (eval-expr-str "2.0+1")
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -593,12 +617,10 @@
            (flt (round (inner source)))
            (fix (inner source))))
        (truncated (ldb (byte to-width 0) as-fix)))
-      (make-instance 'fix
-        :inner (if to-signed
-                  (bits-to-signed truncated to-width)
-                  truncated)
-        :bitwidth to-width
-        :signed to-signed))))
+      (fix
+        (if to-signed (bits-to-signed truncated to-width) truncated)
+        to-width
+        to-signed))))
 
 (defun make-fix-builtin-assoc (to-signed to-width)
   (let ((name (format nil "~c~d" (if to-signed #\i #\u) to-width)))
@@ -607,8 +629,7 @@
                  :coerce-args nil
                  :unwrap-args nil))))
 
-(defun float-cast (source)
-  (make-instance 'flt :inner (inner source)))
+(defun float-cast (source) (flt (inner source)))
 
 (defparameter *builtins*
   (list
