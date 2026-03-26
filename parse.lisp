@@ -155,15 +155,17 @@
 (defun whitespace (&key required)
   (lambda (i)
     (let ((ws-chars '(#\space #\tab #\newline)))
-      (if (or
-            (>= i (length *input*))
-            (and required (not (member (char *input* i) ws-chars))))
-          (values i :fail)
-          (progn
-            (loop :while (< i (length *input*))
-                  :while (member (char *input* i) ws-chars)
-                  :do (incf i))
-            (values i nil))))))
+      (if (and
+            required
+            (or
+              (>= i (length *input*)) ; required and EOF
+              (not (member (char *input* i) ws-chars)))) ;required and first char not ws
+        (values i :fail)
+        (progn
+          (loop :while (< i (length *input*))
+                :while (member (char *input* i) ws-chars)
+                :do (incf i))
+          (values i nil))))))
 
 ; parse "in" surrounded by before and after. return results from "in" only
 (defun surrounded (before in &optional (after before))
@@ -352,31 +354,40 @@
 (defun var-or-symbol ()
   (srcmap (predicate-chars #'alphanumericp)))
 
+(defun pretty-print-parse-tree (tree &optional (indent 0))
+ (etypecase (car tree)
+   (list
+     (pretty-print-parse-tree (car tree) indent)
+     (loop :for arg :in (cdr tree) :do (pretty-print-parse-tree arg (1+ indent))))
+   (t
+     (format t "~v@t~a~%" (* indent 3) (car tree)))))
+
+
+#+nil
+(pretty-print-parse-tree (second (multiple-value-list (parse (expr) "1+2"))))
 
 #+nil
 (parse (expr) "3 xor 3")
 #+nil
 (parse (expr) "sin 4 4")
-
 #+nil
 (parse (expr) "out hex")
-
 #+nil
 (parse (arglist) "1, 2+2, 3")
-
 #+nil
-(parse (expr) "sin(3+3*2)*32")
+(pretty-print-parse-tree (second (multiple-value-list (parse (expr) "sin(3+3*2)*32"))))
 #+nil
-(parse (expr) "u8(x)")
+(parse (arglist) "1)")
+#+nil
+(parse (expr) "u8 1")
+#+nil
+(parse (expr) "sin 45")
 #+nil
 (parse (expr) "3+2")
 #+nil
 (parse (expr) "3+-1.4")
 #+nil
 (parse (expr) "2.0+3")
-
-#+nil
-(parse (srcmap (expr)) "32 poo")
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; VALUE/TYPE SYSTEM
@@ -671,6 +682,8 @@
 
 #+nil
 (eval-expr-str "xor(u8(0x0f), u8(0xaa))")
+(pretty-print-parse-tree (second (multiple-value-list
+                                   (parse (expr) "xor(u8(0x0f), u8(0xaa))"))))
 
 #+nil
 (parse (expr)"16 << 2")
