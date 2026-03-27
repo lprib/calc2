@@ -555,11 +555,39 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; EVALUATOR
 
+(defclass settings ()
+  ((ibase
+     :initarg :ibase
+     :initform (error "required")
+     :accessor settings-ibase)
+   (itype
+     :initarg :itype
+     :initform (error "required")
+     :accessor settings-itype)))
+
+(defclass history-entry ()
+  ((expr-str
+     :initarg :expr-str
+     :initform (error "required")
+     :accessor history-entry-expr-str)
+   (settings
+     :initarg :settings
+     :initform (error "required")
+     :accessor history-entry-settings)
+   (result
+     :initarg :result
+     :initform (error "required")
+     :accessor history-entry-result)))
+
 (defclass session ()
   ((history
      :initarg :history
      :initform (list)
-     :accessor session-history)))
+     :accessor session-history)
+   (settings
+     :initarg :settings
+     :initform (error "required")
+     :accessor history-entry-settings)))
 
 (defstruct builtin fn
   ; Coerce args to the same type via promotion
