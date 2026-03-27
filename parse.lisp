@@ -521,6 +521,11 @@
     (fix 69 t 8)
     (fix 129 nil 8)))
 
+(multiple-value-list
+  (unify
+    (fix 15 nil 8)
+    (fix 170 nil 8)))
+
 #+nil
 (multiple-value-list
   (unify
@@ -550,6 +555,20 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; EVALUATOR
 
+(defclass session ()
+  ((history
+     :initarg :history
+     :initform (list)
+     :accessor session-history)))
+
+(defstruct builtin fn
+  ; Coerce args to the same type via promotion
+  (coerce-args t)
+  ; Only pass inner value of args to the fn, otherwise pass (class val)
+  (unwrap-args t)
+  ; Evaluate args before passing to fn. If nil, verbatim parsed args (without
+  ; srcmap) are passed. Must set coerce/unwrap to nil as well.
+  (eval-args t))
 
 (defparameter *default-numeric-type*
   (fix 0 t :big))
@@ -577,7 +596,9 @@
   (let* ((fn-name (caar fn-expr))
          (builtin (cdr (assoc fn-name *builtins* :test #'equal)))
          ; eval args
-         (args (mapcar #'eval-expr (cdr fn-expr)))
+         (args (if (builtin-eval-args builtin)
+                   (mapcar #'eval-expr (cdr fn-expr))
+                   (mapcar #'quote-expr (cdr fn-expr))))
          (coerced-args ;coerce args if applicable
            (if (and (builtin-coerce-args builtin) (> (length args) 1))
                (multiple-value-list (apply #'unify args))
@@ -594,9 +615,11 @@
            (if (builtin-unwrap-args builtin)
                (same-type-new-value (first coerced-args) result)
                result)))
-    (check-and-correct-overflow
-      wrapped-result
-      (format nil "type ~a as part of ~a operation" (typename (first args)) fn-name))
+    ; If builtin takes quoted args, they will not be class val, dont check overflow
+    (when (builtin-eval-args builtin)
+      (check-and-correct-overflow
+        wrapped-result
+        (format nil "type ~a as part of ~a operation" (typename (first args)) fn-name)))
     wrapped-result))
 
 
@@ -610,9 +633,16 @@
 
 (defun eval-expr (expr)
   (let ((left (car expr)))
-    (typecase left
+    (etypecase left
       (number (eval-atom expr))
       (list (eval-fn expr)))))
+
+; strip away source mappings, but do not eval
+(defun quote-expr (expr)
+  (let ((left (car expr)))
+    (etypecase left
+      (list (error "nested quoted args not supported"))
+      (t (car expr)))))
 
 (defun eval-expr-str (str)
   (multiple-value-bind (_ res) (parse (expr) str)
@@ -626,8 +656,6 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; Built-in functions
-
-(defstruct builtin fn coerce-args unwrap-args)
 
 (defun bits-to-signed (n n-bits)
   (let ((truncated (ldb (byte n-bits 0) n)))
@@ -645,8 +673,8 @@
        (truncated (ldb (byte to-width 0) as-fix)))
       (fix
         (if to-signed (bits-to-signed truncated to-width) truncated)
-        to-width
-        to-signed))))
+        to-signed
+        to-width))))
 
 (defun make-fix-builtin-assoc (to-signed to-width)
   (let ((name (format nil "~c~d" (if to-signed #\i #\u) to-width)))
@@ -659,10 +687,10 @@
 
 (defparameter *builtins*
   (list
-    (cons #\+ (make-builtin :fn #'+ :coerce-args t :unwrap-args t))
-    (cons #\- (make-builtin :fn #'- :coerce-args t :unwrap-args t))
-    (cons #\* (make-builtin :fn #'* :coerce-args t :unwrap-args t))
-    (cons #\/ (make-builtin :fn #'/ :coerce-args t :unwrap-args t))
+    (cons #\+ (make-builtin :fn #'+))
+    (cons #\- (make-builtin :fn #'-))
+    (cons #\* (make-builtin :fn #'*))
+    (cons #\/ (make-builtin :fn #'/))
     (make-fix-builtin-assoc nil 8)
     (make-fix-builtin-assoc nil 16)
     (make-fix-builtin-assoc nil 32)
@@ -672,16 +700,28 @@
     (make-fix-builtin-assoc t 32)
     (make-fix-builtin-assoc t 64)
     (cons "float" (make-builtin :fn #'float-cast :coerce-args nil :unwrap-args nil))
-    (cons #\& (make-builtin :fn #'logand :coerce-args t :unwrap-args t))
-    (cons #\| (make-builtin :fn #'logior :coerce-args t :unwrap-args t))
-    (cons "xor" (make-builtin :fn #'logxor :coerce-args t :unwrap-args t))
-    (cons ">>" (make-builtin :fn (lambda (a b) (ash a (- b)))
-                             :coerce-args t :unwrap-args t))
-    (cons "<<" (make-builtin :fn #'ash :coerce-args t :unwrap-args t))))
+    (cons #\& (make-builtin :fn #'logand))
+    (cons #\| (make-builtin :fn #'logior))
+    (cons "xor" (make-builtin :fn #'logxor))
+    (cons ">>" (make-builtin :fn (lambda (a b) (ash a (- b)))))
+    (cons "<<" (make-builtin :fn #'ash))
+    (cons "test" (make-builtin
+                   :fn (lambda (args) (print args) (fix 0 1 :b))
+                   :coerce-args nil
+                   :unwrap-args nil
+                   :eval-args nil))))
 
 
 #+nil
 (eval-expr-str "xor(u8(0x0f), u8(0xaa))")
+
+#+nil
+(eval-expr-str "u8(15)")
+
+#+nil
+(eval-expr-str "test(hello)")
+
+#+nil
 (pretty-print-parse-tree (second (multiple-value-list
                                    (parse (expr) "xor(u8(0x0f), u8(0xaa))"))))
 
