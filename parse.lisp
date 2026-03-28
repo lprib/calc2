@@ -1,4 +1,3 @@
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; COMBINATORS
 
@@ -182,14 +181,14 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; PARSER
 
-(defparameter *assumed-radix* 10)
-
-(defun default-int () (integer-fast :radix *assumed-radix*))
+; default-int gets radix from current settings
+(defun default-int () (integer-fast :radix (settings-ibase *settings*)))
 
 #+nil
 (parse (default-int) "1234")
 #+nil
-(let ((*assumed-radix* 16)) (parse (default-int) "ff"))
+(let ((*settings* (make-instance 'settings :ibase 16 :itype nil)))
+  (parse (default-int) "ff"))
 
 (defun prefixed-radix (prefix radix)
   (map-res (seq (lit prefix) (integer-fast :radix radix)) (lambda (pair) (second pair))))
@@ -546,48 +545,76 @@
 (defmethod to-readable-form ((n flt))
   (list (inner n)))
 
-(defun from-readable-form (form)
+(defun read-val (form)
   (etypecase (car form)
     (integer (destructuring-bind (val signed bitwidth) form
                (fix val signed bitwidth)))
     (float (flt (car form)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-; EVALUATOR
+; MAIN SESSION
 
 (defclass settings ()
-  ((ibase
-     :initarg :ibase
-     :initform (error "required")
-     :accessor settings-ibase)
-   (itype
-     :initarg :itype
-     :initform (error "required")
-     :accessor settings-itype)))
+  ((ibase :initarg :ibase :initform (error "required") :accessor settings-ibase)
+   (itype :initarg :itype :initform (error "required") :accessor settings-itype)))
+
+(defmethod to-readable-form ((s settings))
+  (list :ibase (settings-ibase s) :itype (to-readable-form (settings-itype s))))
+
+(defmethod read-settings (form)
+  (make-instance
+    'settings
+    :ibase (getf form :ibase)
+    :itype (read-val (getf form :itype))))
+
+#+nil
+(read-settings '(:ibase 10 :itype (0 t 32)))
+
+(defmethod copy-of ((s settings))
+  (make-instance
+    'settings
+    :ibase (settings-ibase s)
+    :itype (settings-itype s)))
 
 (defclass history-entry ()
-  ((expr-str
-     :initarg :expr-str
-     :initform (error "required")
-     :accessor history-entry-expr-str)
-   (settings
-     :initarg :settings
-     :initform (error "required")
-     :accessor history-entry-settings)
-   (result
-     :initarg :result
-     :initform (error "required")
-     :accessor history-entry-result)))
+  ((expr :initarg :expr :initform (error "required") :accessor history-entry-expr)
+   (settings :initarg :settings :initform (error "required") :accessor history-entry-settings)
+   (result :initarg :result :initform (error "required") :accessor history-entry-result)))
+
+(defmethod to-readable-form ((h history-entry))
+  (list :expr (history-entry-expr h)
+        :settings (to-readable-form (history-entry-settings h))
+        :result (to-readable-form (history-entry-result h))))
+
+(to-readable-form
+  (make-instance
+    'history-entry
+    :expr "1+2"
+    :settings (make-instance 'settings :ibase 10 :itype (fix 0 t 32))
+    :result (fix 3 t 32)))
 
 (defclass session ()
-  ((history
-     :initarg :history
-     :initform (list)
-     :accessor session-history)
-   (settings
-     :initarg :settings
-     :initform (error "required")
-     :accessor history-entry-settings)))
+  ((history :initarg :history :initform (list) :accessor session-history)
+   (settings :initarg :settings :initform (error "required") :accessor history-entry-settings)))
+
+; The current settings
+(defparameter *settings*
+  (make-instance
+    'settings
+    :ibase 10
+    :itype (fix 0 t :big)))
+
+(defparameter *session*
+  (make-instance
+    'session
+    :settings (make-instance
+                'settings
+                :ibase 10
+                :itype (fix 0 t :big))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; EVALUATOR
 
 (defstruct builtin fn
   ; Coerce args to the same type via promotion
@@ -598,14 +625,11 @@
   ; srcmap) are passed. Must set coerce/unwrap to nil as well.
   (eval-args t))
 
-(defparameter *default-numeric-type*
-  (fix 0 t :big))
-
 (defun eval-atom (atom-expr)
   (let ((val (car atom-expr)))
     (etypecase val
       ; ints become default type (even if its float)
-      (integer (same-type-new-value *default-int-type* val))
+      (integer (same-type-new-value (settings-itype *settings*) val))
       ; floats must always be floats
       (float (flt val)))))
 
@@ -613,10 +637,10 @@
 (eval-atom '(1))
 (eval-atom '(1d0))
 #+nil
-(let ((*default-int-type* (make-instance 'flt :inner 0)))
+(let ((*settings* (make-instance 'settings :ibase 10 :itype (flt 0))))
   (eval-atom '(1)))
 #+nil
-(let ((*default-int-type* (make-instance 'fix :inner 0 :signed nil :bitwidth 8)))
+(let ((*settings* (make-instance 'settings :ibase 10 :itype (fix 0 t 32))))
   (eval-atom '(1)))
 
 
