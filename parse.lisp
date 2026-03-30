@@ -475,9 +475,9 @@
         ((> (inner n) max-value)
          (warn 'overflow :value n :context context)
          (setf (inner n) (- (inner n) (expt 2 (bitwidth n)))))
-        ((< (inner n) min-value
+        ((< (inner n) min-value)
           (warn 'overflow :value n :context context)
-          (setf (inner n) (+ (inner n) (expt 2 (bitwidth n))))))))))
+          (setf (inner n) (+ (inner n) (expt 2 (bitwidth n)))))))))
 
 #+nil
 (check-and-correct-overflow
