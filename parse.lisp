@@ -295,7 +295,7 @@
       (var-or-symbol))))
 
 (defun expr ()
-  (bitwise))
+  (surrounded (whitespace) (bitwise)))
 ; In c these have own precedence levels, cbf
 (defun bitwise () (assoc-precedence (alt (charset "&|") (lit "xor")) #'bitshift))
 (defun bitshift () (assoc-precedence (alt (lit "<<") (lit ">>")) #'additive))
@@ -324,7 +324,7 @@
 #+nil
 (parse (expr) "( 1 ^ 2 ) ^ ( 3 + 4 ) * 3")
 #+nil
-(parse (expr) "1^2xor3")
+(parse (expr) " 1^2xor3 ")
 #+nil
 (parse (expr) "3 & 3 >> 4 mod 4")
 
@@ -475,9 +475,9 @@
         ((> (inner n) max-value)
          (warn 'overflow :value n :context context)
          (setf (inner n) (- (inner n) (expt 2 (bitwidth n)))))
-        ((< (inner n) min-value)
+        ((< (inner n) min-value
           (warn 'overflow :value n :context context)
-          (setf (inner n) (+ (inner n) (expt 2 (bitwidth n)))))))))
+          (setf (inner n) (+ (inner n) (expt 2 (bitwidth n))))))))))
 
 #+nil
 (check-and-correct-overflow
@@ -523,6 +523,7 @@
     (fix 69 t 8)
     (fix 129 nil 8)))
 
+#+nil
 (multiple-value-list
   (unify
     (fix 15 nil 8)
@@ -555,7 +556,7 @@
     (float (flt (car form)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-; MAIN SESSION
+; SESSION MANAGEMENT
 
 (defclass settings ()
   ((ibase :initarg :ibase :initform (error "required") :accessor settings-ibase)
@@ -564,7 +565,7 @@
 (defmethod to-readable-form ((s settings))
   (list :ibase (settings-ibase s) :itype (to-readable-form (settings-itype s))))
 
-(defmethod read-settings (form)
+(defun read-settings (form)
   (make-instance
     'settings
     :ibase (getf form :ibase)
@@ -582,23 +583,51 @@
 (defclass history-entry ()
   ((expr :initarg :expr :initform (error "required") :accessor history-entry-expr)
    (settings :initarg :settings :initform (error "required") :accessor history-entry-settings)
-   (result :initarg :result :initform (error "required") :accessor history-entry-result)))
+   (state :initarg :state :initform (error "required") :accessor history-entry-state)
+   (result :initarg :result :initform (error "required") :accessor history-entry-result)
+   (notes :initarg :notes :initform nil :accessor history-entry-notes)))
 
 (defmethod to-readable-form ((h history-entry))
   (list :expr (history-entry-expr h)
         :settings (to-readable-form (history-entry-settings h))
-        :result (to-readable-form (history-entry-result h))))
+        :state (history-entry-state h)
+        :result (to-readable-form (history-entry-result h))
+        :notes (history-entry-notes h)))
 
+(defun read-history-entry (form)
+  (make-instance 'history-entry
+                 :expr (getf form :expr)
+                 :settings (read-settings (getf form :settings))
+                 :state (getf form :state)
+                 :result (getf form :result)
+                 :notes (getf form :notes)))
+
+#+nil
 (to-readable-form
   (make-instance
     'history-entry
     :expr "1+2"
     :settings (make-instance 'settings :ibase 10 :itype (fix 0 t 32))
+    :state :ok
     :result (fix 3 t 32)))
 
 (defclass session ()
   ((history :initarg :history :initform (list) :accessor session-history)
-   (settings :initarg :settings :initform (error "required") :accessor history-entry-settings)))
+   (settings :initarg :settings :initform (error "required") :accessor session-settings)))
+
+
+(defmethod to-readable-form ((s session))
+  (list
+    :settings
+    (to-readable-form (session-settings s))
+    :history
+    (mapcar #'to-readable-form (session-history s))))
+
+(defun read-session (form)
+  (make-instance 'session
+                 :history (mapcar #'read-history-entry (getf form :history))
+                 :settings (read-settings (getf form :settings))))
+
 
 ; The current settings
 (defparameter *settings*
@@ -614,6 +643,32 @@
                 'settings
                 :ibase 10
                 :itype (fix 0 t :big))))
+
+; Result, mentioned below, is (cons code result) where code can be :fail or
+; :result
+(defun commit-result (input result-cons notes)
+  (push (make-instance 'history-entry
+                       :expr input
+                       :settings (copy-of *settings*)
+                       :state (car result-cons)
+                       :result (cdr result-cons)
+                       :notes notes)
+        (session-history *session*)))
+
+(defun parse-eval-commit (input)
+  (let ((res (eval-string input)))
+    (commit-result input res "TODO catch warns/notes")))
+
+#+nil
+(parse-eval-commit "2+2")
+#+nil
+(parse-eval-commit "34534*098+098345+09384+834*3425")
+
+#+nil
+(read-session (to-readable-form *session*))
+
+#+nil
+(format t (write-to-string (to-readable-form *session*) :pretty t :readably t :miser-width nil :right-margin nil :case :downcase))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -652,7 +707,7 @@
          (builtin (cdr (assoc fn-name *builtins* :test #'equal)))
          ; eval args
          (args (if (builtin-eval-args builtin)
-                   (mapcar #'eval-expr (cdr fn-expr))
+                   (mapcar #'eval-expr-or-atom (cdr fn-expr))
                    (mapcar #'quote-expr (cdr fn-expr))))
          (coerced-args ;coerce args if applicable
            (if (and (builtin-coerce-args builtin) (> (length args) 1))
@@ -684,9 +739,9 @@
 (defparameter *egexpr* (second (multiple-value-list (parse (expr) "69+420"))))
 
 #+nil
-(eval-expr (second (multiple-value-list (parse (expr) "2+3*4"))))
+(eval-expr-or-atom (second (multiple-value-list (parse (expr) "2+3*4"))))
 
-(defun eval-expr (expr)
+(defun eval-expr-or-atom (expr)
   (let ((left (car expr)))
     (etypecase left
       (number (eval-atom expr))
@@ -699,18 +754,19 @@
       (list (error "nested quoted args not supported"))
       (t (car expr)))))
 
-(defun eval-expr-str (str)
+; returns (code . result)
+(defun eval-string (str)
   (multiple-value-bind (_ res) (parse (expr) str)
     (declare (ignore _))
     (case res
-      (:fail :fail)
-      (otherwise (eval-expr res)))))
+      (:fail (cons :fail nil))
+      (otherwise (cons :ok (eval-expr-or-atom res))))))
 
 #+nil
-(eval-expr-str "2.0+1")
+(eval-string "2.0+1")
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-; Built-in functions
+; BUILT-IN FUNCTIONS
 
 (defun bits-to-signed (n n-bits)
   (let ((truncated (ldb (byte n-bits 0) n)))
@@ -745,7 +801,9 @@
     (cons #\+ (make-builtin :fn #'+))
     (cons #\- (make-builtin :fn #'-))
     (cons #\* (make-builtin :fn #'*))
-    (cons #\/ (make-builtin :fn #'/))
+    (cons #\/ (make-builtin :fn #'divide-builtin
+                            :coerce-args t
+                            :unwrap-args nil))
     (make-fix-builtin-assoc nil 8)
     (make-fix-builtin-assoc nil 16)
     (make-fix-builtin-assoc nil 32)
@@ -766,12 +824,22 @@
                    :unwrap-args nil
                    :eval-args nil))))
 
+(defgeneric divide-builtin (num den))
+(defmethod divide-builtin ((num flt) (den flt))
+  (flt (/ (inner num) (inner den))))
+(defmethod divide-builtin ((num fix) (den fix))
+  (multiple-value-bind (res rem) (floor (inner num) (inner den))
+    (declare (ignore rem))
+    (same-type-new-value num res)))
 
 #+nil
 (eval-expr-str "xor(u8(0x0f), u8(0xaa))")
 
 #+nil
 (eval-expr-str "u8(15)")
+
+#+nil
+(eval-expr-str "16.0/3")
 
 #+nil
 (eval-expr-str "test(hello)")
@@ -782,3 +850,4 @@
 
 #+nil
 (parse (expr)"16 << 2")
+
