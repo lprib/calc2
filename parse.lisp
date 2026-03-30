@@ -1,3 +1,6 @@
+(defvar *input*)
+(defvar *settings*)
+(defvar *builtins*)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; COMBINATORS
 
