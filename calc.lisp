@@ -475,9 +475,9 @@
         ((> (inner n) max-value)
          (warn 'overflow :value n :context context)
          (setf (inner n) (- (inner n) (expt 2 (bitwidth n)))))
-        ((< (inner n) min-value
-          (warn 'overflow :value n :context context)
-          (setf (inner n) (+ (inner n) (expt 2 (bitwidth n))))))))))
+        ((< (inner n) min-value)
+         (warn 'overflow :value n :context context)
+         (setf (inner n) (+ (inner n) (expt 2 (bitwidth n)))))))))
 
 #+nil
 (check-and-correct-overflow
@@ -796,6 +796,15 @@
 
 (defun float-cast (source) (flt (inner source)))
 
+(defgeneric divide-builtin (num den))
+(defmethod divide-builtin ((num flt) (den flt))
+  (flt (/ (inner num) (inner den))))
+(defmethod divide-builtin ((num fix) (den fix))
+  (multiple-value-bind (res rem) (floor (inner num) (inner den))
+    (declare (ignore rem))
+    (same-type-new-value num res)))
+
+
 (defparameter *builtins*
   (list
     (cons #\+ (make-builtin :fn #'+))
@@ -823,14 +832,6 @@
                    :coerce-args nil
                    :unwrap-args nil
                    :eval-args nil))))
-
-(defgeneric divide-builtin (num den))
-(defmethod divide-builtin ((num flt) (den flt))
-  (flt (/ (inner num) (inner den))))
-(defmethod divide-builtin ((num fix) (den fix))
-  (multiple-value-bind (res rem) (floor (inner num) (inner den))
-    (declare (ignore rem))
-    (same-type-new-value num res)))
 
 #+nil
 (eval-expr-str "xor(u8(0x0f), u8(0xaa))")
