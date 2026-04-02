@@ -313,7 +313,7 @@
     (seq
       (primary)
       (opt (seq
-             (surrounded (whitespace) (charset "^"))
+             (surrounded (whitespace) (srcmap (charset "^")))
              (lambda (i) (funcall (power) i))))) ; break recursion thunk
     (lambda (res)
       (if (second res)
@@ -428,6 +428,9 @@
 (defmethod print-object ((obj fix) stream)
   (format stream "~d:~a" (inner obj) (typename obj)))
 
+(defmethod value-string ((obj fix))
+  (format nil "~d" (inner obj)))
+
 ;;;; FLOAT ;;;;
 (defclass flt (val) ())
 
@@ -440,6 +443,9 @@
 
 (defmethod print-object ((obj flt) stream)
   (format stream "~f:~a" (inner obj) (typename obj)))
+
+(defmethod value-string ((obj flt))
+  (format nil "~f" (inner obj)))
 
 ;;;; TYPE SYSTEM ;;;;
 (defgeneric same-type-new-value (old new-value))
@@ -707,7 +713,11 @@
          (builtin (cdr (assoc fn-name *builtins* :test #'equal)))
          ; eval args
          (args (if (builtin-eval-args builtin)
-                   (mapcar #'eval-expr-or-atom (cdr fn-expr))
+                   (let* ((try-args (mapcar #'eval-expr-or-atom (cdr fn-expr)))
+                          (first-error (find-if (lambda (a) (eq :fail (car a))) try-args)))
+                     (when first-error
+                       (return-from eval-fn first-error))
+                     (mapcar #'cdr try-args))
                    (mapcar #'quote-expr (cdr fn-expr))))
          (coerced-args ;coerce args if applicable
            (if (and (builtin-coerce-args builtin) (> (length args) 1))
@@ -730,7 +740,7 @@
       (check-and-correct-overflow
         wrapped-result
         (format nil "type ~a as part of ~a operation" (typename (first args)) fn-name)))
-    wrapped-result))
+    (cons :ok wrapped-result)))
 
 
 #+nil
@@ -739,13 +749,14 @@
 (defparameter *egexpr* (second (multiple-value-list (parse (expr) "69+420"))))
 
 #+nil
-(eval-expr-or-atom (second (multiple-value-list (parse (expr) "2+3*4"))))
+(eval-expr-or-atom (second (multiple-value-list (parse (expr) "2+3"))))
 
 (defun eval-expr-or-atom (expr)
   (let ((left (car expr)))
     (etypecase left
-      (number (eval-atom expr))
-      (list (eval-fn expr)))))
+      (number (cons :ok (eval-atom expr)))
+      (list (eval-fn expr))
+      (string (cons :fail (format nil "unknown var ~a" left))))))
 
 ; strip away source mappings, but do not eval
 (defun quote-expr (expr)
@@ -756,11 +767,12 @@
 
 ; returns (code . result)
 (defun eval-string (str)
-  (multiple-value-bind (_ res) (parse (expr) str)
-    (declare (ignore _))
+  (multiple-value-bind (endi res) (parse (expr) str)
     (case res
-      (:fail (cons :fail nil))
-      (otherwise (cons :ok (eval-expr-or-atom res))))))
+      (:fail (cons :fail "parse error"))
+      (otherwise (if (= endi (length str))
+                     (eval-expr-or-atom res)
+                     (cons :fail (format nil "unexpected char ~c (at ~d)" (elt str endi) endi)))))))
 
 #+nil
 (eval-string "2.0+1")
@@ -834,17 +846,17 @@
                    :eval-args nil))))
 
 #+nil
-(eval-expr-str "xor(u8(0x0f), u8(0xaa))")
-
+(eval-string "xor(u8(0x0f), u8(0xaa))")
 #+nil
-(eval-expr-str "u8(15)")
-
+(eval-string "u8(15)")
 #+nil
-(eval-expr-str "16.0/3")
-
+(eval-string "16.0/")
 #+nil
-(eval-expr-str "test(hello)")
-
+(eval-string "3+a")
+#+nil
+(eval-string "test(hello)")
+#+nil
+(eval-string "u8(256)+33")
 #+nil
 (pretty-print-parse-tree (second (multiple-value-list
                                    (parse (expr) "xor(u8(0x0f), u8(0xaa))"))))
@@ -852,3 +864,103 @@
 #+nil
 (parse (expr)"16 << 2")
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; REPL
+(sb-alien:define-alien-routine add-history sb-alien:void (line sb-alien:c-string))
+(sb-alien:define-alien-routine readline sb-alien:c-string (prompt sb-alien:c-string))
+(sb-alien:define-alien-routine rl-get-screen-size sb-alien:void (rows sb-alien:int :out) (cols sb-alien:int :out))
+(sb-alien:define-alien-routine rl-redisplay sb-alien:void)
+(sb-alien:define-alien-variable rl-line-buffer sb-alien:c-string)
+(sb-alien:define-alien-variable rl-redisplay-function (* (function sb-alien:void)))
+
+(defun load-libs ()
+  (sb-alien:load-shared-object "libreadline.so" :dont-save t)
+  (sb-alien:load-shared-object "libhistory.so" :dont-save t))
+
+(defparameter *prompt* (format nil "~C[31mcalc> ~C[0m" #\escape #\escape))
+
+(defun display-eval-result (value)
+  (format nil "~a (~a)" (value-string value) (typename value)))
+
+(defun settings-displayable ()
+  (format nil "ibase=~d itype=~a"
+          (settings-ibase *settings*)
+          (typename (settings-itype *settings*))))
+
+; return (values display warnings)
+(defun eval-to-displayable (str)
+  (let ((warnings (list)))
+    (handler-bind
+        ((warning (lambda (cnd)
+                   (push (with-output-to-string (strm) (princ cnd strm))
+                         warnings)
+                   (muffle-warning cnd))))
+      (let* ((res (eval-string str))
+             (status (car res))
+             (value (cdr res)))
+        (values
+          (case status
+            (:ok (format nil "~a (~a)" (value-string value) (typename value)))
+            (:fail (if (plusp (length str)) value "")))
+          (nreverse warnings))))))
+
+#+nil
+(eval-to-displayable "u8(255)+u8(1)")
+
+(sb-alien:define-alien-callable realtime-status-callback sb-alien:void ()
+  (multiple-value-bind (display warns) (eval-to-displayable rl-line-buffer)
+    (let* ((settings (settings-displayable))
+           (status (format nil "~C[1;33m= ~a ~C[1;93m~a~C[22;90m[~a]~C[0m"
+                           #\escape
+                           display
+                           #\escape
+                           (if warns "[WARN]" "")
+                           #\escape
+                           settings
+                           #\escape)))
+      (format t "~C[s~C[1A~C~C[2K~A~C[u"
+          #\escape ; save cursor
+          #\escape ; up 1 line
+          #\return ; carriage return (col 0)
+          #\escape ; erase line
+          status ; status string
+          #\escape))) ; restore cursor
+  (finish-output t)
+  (rl-redisplay))
+
+(defun enter-line (line)
+  (multiple-value-bind (display warns) (eval-to-displayable line)
+    (loop :for w :in warns
+          :do (format t "~C[93m~A~C[0m"
+                      #\escape
+                      w
+                      #\escape))
+    ; TODO(liam): this overwrites the warning above. How can We maintain the
+    ; CLI and print arbitrary amount of lines?
+    (format t "~C[2A~C~C[2K~A~C~C[2K~A~C~C"
+            #\escape #\return #\escape
+            line
+            #\linefeed #\escape
+            (format nil "~C[32m  = ~a~C[0m" #\escape display #\escape)
+            #\linefeed #\linefeed))
+  (add-history line))
+
+(defun repl ()
+  (format t "~%") ; initial newline for status
+  (loop
+    (let ((line (readline *prompt*)))
+      (cond
+        ((null line) ; EOF
+         (return-from repl))
+        ((zerop (length line))) ; empty: do nothing
+        (t (enter-line line))))))
+
+(defun main ()
+  (load-libs)
+  (setf rl-redisplay-function
+        (sb-alien:alien-sap
+          (sb-alien:alien-callable-function 'realtime-status-callback)))
+  (repl))
+
+
+(main)

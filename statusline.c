@@ -41,7 +41,7 @@ int main(void) {
     while ((line = readline("prompt > ")) != NULL) {
         printf("\033[2A\r\033[2K"); /* go up 2, clear the status line */
         printf("%s\n", line);
-        printf("    = 3.14159\n");
+        printf("    = result\n");
         printf("\n");               /* blank line for next status */
         if (*line)
             add_history(line);
