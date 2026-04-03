@@ -1,5 +1,5 @@
 (defvar *input*)
-(defvar *settings*)
+(defvar *session*)
 (defvar *builtins*)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; COMBINATORS
@@ -10,25 +10,25 @@
   `(let ((*input* ,input))
      (funcall ,parser 0)))
 
-; literal string
 (defun lit (l)
+  "Parser of literal string"
   (lambda (i)
     (let ((end (+ i (length l))))
         (if (and (<= end (length *input*)) (not (mismatch l *input* :test #'char= :start2 i :end2 end)))
             (values end l)
             (values i :fail)))))
 
-; if parser is successfull, turn its result into (res . (start . end)) where
-; start and end are the bounds of it in the input string
 (defun srcmap (parser)
+  "If parser is successfull, turn its result into (res . (start . end)) where
+  start and end are the bounds of it in the input string"
   (lambda (i)
     (multiple-value-bind (new-i res) (funcall parser i)
       (case res
         (:fail (values i :fail))
         (otherwise (values new-i (cons res (cons i new-i))))))))
 
-; consume while predicate matches each char
 (defun predicate-chars (predicate)
+  "Consume while predicate matches each char, return string"
   (lambda (i)
     (let ((start i))
       (loop :while (< i (length *input*))
@@ -38,15 +38,15 @@
           (values i (subseq *input* start i))
           (values i :fail)))))
 
-; single character from set of chars
 (defun charset (chars)
+  "Consume a single character from set of chars, return that char"
   (lambda (i)
     (if (and (< i (length *input*)) (find (elt *input* i) chars :test #'char=))
         (values (1+ i) (elt *input* i))
         (values i :fail))))
 
-; single parser repeated one or more times
 (defun many (parser)
+  "Run parser repeated one or more times"
   (lambda (i)
     (loop :for index = i :then new-i
           :for (new-i res) = (multiple-value-list (funcall parser index))
@@ -54,8 +54,8 @@
           :collect res :into results
           :finally (return (values index (or results :fail))))))
 
-; apply all parsers in order
 (defun seq (&rest parsers)
+  "Apply all parsers in order"
   (lambda (i)
     (loop :for parser :in parsers
           :for index = i :then new-i
@@ -65,21 +65,21 @@
             :return (values i :fail)
           :finally (return (values new-i results)))))
 
-; parser cannot fail, just returns nil instead of :fail
 (defun opt (parser)
+  "parser cannot fail, just returns nil instead of :fail"
   (lambda (i)
     (multiple-value-bind (i res) (funcall parser i)
       (values i (case res (:fail nil) (otherwise res))))))
 
-; Map the result of parser only if it succeeds
 (defun map-res (parser fn)
+  "Map the result of parser only if it succeeds"
   (lambda (i)
     (multiple-value-bind (i res) (funcall parser i)
       (values i (case res (:fail :fail) (otherwise (funcall fn res)))))))
 
-; Map the result of parser only if it succeeds
-; If the map fn returns :fail, don't consume any input
 (defun map-fallible (parser fn)
+  "Map the result of parser only if it succeeds. If the fn returns :fail, don't
+  consume any input and treat the parse as if it failed"
   (lambda (i)
     (multiple-value-bind (new-i res) (funcall parser i)
       (case res
@@ -90,16 +90,18 @@
                 (:fail (values i :fail)) ; Backtrack if map fails
                 (otherwise (values new-i mapped-res)))))))))
 
-; try parsers in order, consume the first one that succeeds and return that value
 (defun alt (&rest parsers)
+  "try parsers in order, consume the first one that succeeds and return that
+  value"
   (lambda (i)
     (loop :for parser :in parsers
           :for (new-i res) = (multiple-value-list (funcall parser i))
           :until (not (eq res :fail))
           :finally (return (values new-i res)))))
 
-; run the parser. ignore all returned values and replace with the verbatim consumed text
 (defun recognise (parser)
+  "run the parser. ignore all returned values and replace with the verbatim
+  consumed text"
   (lambda (i)
     (multiple-value-bind (end res) (funcall parser i)
       (values end
@@ -107,14 +109,14 @@
                 (:fail (values i res))
                 (otherwise (subseq *input* i end)))))))
 
-; parse integer with radix common lisp style
 (defun integer-fast (&key radix)
+  "parse integer with radix using CL parse-integer"
   (lambda (i)
     (multiple-value-bind (res i) (parse-integer *input* :start i :radix radix :junk-allowed t)
       (values i (or res :fail)))))
 
-; parse integer with radix common lisp style, no prefix +/- allowed
 (defun natural-fast (&key radix)
+  "parse integer with radix with CL parse-integer, no prefix +/- allowed"
   (lambda (i)
     (if (>= i (length *input*))
         (values i :fail)
@@ -123,9 +125,9 @@
             (values i (or res :fail)))
           (values i :fail)))))
 
-; dirty ass implementation, (recognise) and just pass the result to
-; (read-from-string), but oh well
 (defun double-flt()
+  "Parse doulble-float. dirty ass implementation, (recognise) and just pass the
+  result to (read-from-string), but oh well"
    (let* ((digits (many (charset "0123456789")))
           (double-parser
             (recognise
@@ -152,9 +154,9 @@
 #+nil
 (parse (double-flt) "1.509e8")
 
-; always succeed, skip whitespace
-; if required, require there to be some whitespace
 (defun whitespace (&key required)
+  "default behaviour is parse optional whitespace and always succeed. if
+  :required true, fail if there is no whitespace to consume"
   (lambda (i)
     (let ((ws-chars '(#\space #\tab #\newline)))
       (if (and
@@ -169,31 +171,35 @@
                 :do (incf i))
           (values i nil))))))
 
-; parse "in" surrounded by before and after. return results from "in" only
 (defun surrounded (before in &optional (after before))
+  "parse `in` surrounded by before and after. return results from `in` only"
   (map-res (seq before in after) #'second))
 
-; parse parser preceeded by before, return results from parser only
 (defun preceeded (before parser)
+  "parse parser preceeded by before, return results from parser only"
   (map-res (seq before parser) #'second))
 
-; parse parser succeeded by after, return results from parser only
 (defun succeeded (parser after)
+  "parse parser succeeded by after, return results from parser only"
   (map-res (seq parser after) #'first))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; PARSER
 
-; default-int gets radix from current settings
-(defun default-int () (integer-fast :radix (settings-ibase *settings*)))
+(defun default-int ()
+  "default-int gets radix from current settings"
+  (integer-fast :radix (settings-ibase (session-settings *session*))))
 
 #+nil
 (parse (default-int) "1234")
 #+nil
-(let ((*settings* (make-instance 'settings :ibase 16 :itype nil)))
+(let ((*session*
+        (make-instance 'session
+                       :settings (make-instance 'settings :ibase 16 :obase 10 :itype nil))))
   (parse (default-int) "ff"))
 
 (defun prefixed-radix (prefix radix)
+  "parse (seq prefix int) and parse the int in specified radix. For 0xHEX 0bBIN"
   (map-res (seq (lit prefix) (integer-fast :radix radix)) (lambda (pair) (second pair))))
 
 #+nil
@@ -216,22 +222,22 @@
 (defparameter *si-prefix-chars*
   (coerce (mapcar #'car *si-prefixes*) 'string))
 
-; 123 -> 0.123)
-(defun natural->fraction-part (n)
+(defun to-fraction-digits (n)
+  "Convert integer to equivalent fraction digits e.g. 123 -> 0.123"
   (if (zerop n)
       0
       (/ n (expt 10 (1+ (floor (log n 10)))))))
 
-; purposely only recognizes infix si prefixes (eg 10k2), and not postfix 12k.
-; Postfix should be handled higher up the parse tree to accomodate floats like
-; 1.2k
 (defun si-shorthand ()
+  "purposely only recognizes infix si prefixes (eg 10k2), and not postfix 12k.
+  Postfix should be handled higher up the parse tree to accomodate floats like
+  1.2k TODO(liam) implement"
   (map-res
     (seq (natural-fast :radix 10) (charset *si-prefix-chars*) (natural-fast :radix 10))
     (lambda (res)
       (destructuring-bind (natural si fractional) res
         (*
-          (+ natural (natural->fraction-part fractional))
+          (+ natural (to-fraction-digits fractional))
           (cdr (assoc si *si-prefixes*)))))))
 
 #+nil
@@ -240,6 +246,7 @@
 (parse (natural-fast) "")
 
 (defun number-literal ()
+  "parse all types of number literal"
   (srcmap
     (alt
       (double-flt)
@@ -255,11 +262,12 @@
 (parse (number-literal) "2.0")
 
 (defun assoc-precedence (infix-parser next-parser-thunk &key (assoc-fn #'l-assoc))
-  "
-  Parse an associative precedence operation. Will return results in the form
-  ((op src-start . src-end) arg1 arg2)
-  i.e. it automatically wraps the infix-parser in a srcmap
-  "
+  "Parse an associative precedence operation. next-parser-thunk is evaluated to
+  obtain the next higher precedence parser (to avoid circular refs). assoc-fn
+  will be used to transform the results from parsed form to AST form.
+
+  Will return results in the form ((op src-start . src-end) arg1 arg2) i.e. it
+  automatically wraps the infix-parser in a srcmap"
   (lambda (i)
     (let* ((next-parser (funcall next-parser-thunk))
            (appended-op (seq (surrounded (whitespace) (srcmap infix-parser)) next-parser))
@@ -267,11 +275,9 @@
         (funcall (map-res parser assoc-fn) i))))
 
 (defun l-assoc (form)
-  "
-  Left-associative transformation.
+  "Left-associative transformation.
   from: (1 ((+ 2) (+ 3))) ; BNF structure 'left { op right }'
-  to: ((1 + 2) + 3) ; desired parse tree
-  "
+  to: ((1 + 2) + 3) ; desired parse tree "
   (destructuring-bind (left appended-ops) form
     (if (null appended-ops)
         left ; just a unary passthrough
@@ -328,7 +334,7 @@
 #+nil
 (parse (expr) "3 & 3 >> 4 mod 4")
 
-(defun arglist ()
+(defun fn-call-arglist ()
   (map-res
     (seq (expr) (opt (many (preceeded (surrounded (whitespace) (lit ",")) (expr)))))
     (lambda (res) (cons (car res) (cadr res)))))
@@ -339,7 +345,7 @@
       (srcmap (predicate-chars #'alphanumericp))
       (surrounded
         (surrounded (whitespace) (lit "("))
-        (arglist)
+        (fn-call-arglist)
         (surrounded (whitespace) (lit ")"))))
     (lambda (res)
       (cons (car res) (cadr res)))))
@@ -375,11 +381,11 @@
 #+nil
 (parse (expr) "out hex")
 #+nil
-(parse (arglist) "1, 2+2, 3")
+(parse (fn-call-arglist) "1, 2+2, 3")
 #+nil
 (pretty-print-parse-tree (second (multiple-value-list (parse (expr) "sin(3+3*2)*32"))))
 #+nil
-(parse (arglist) "1)")
+(parse (fn-call-arglist) "1)")
 #+nil
 (parse (expr) "u8 1")
 #+nil
@@ -412,8 +418,8 @@
      :initform (error "required")
      :accessor bitwidth)))
 
-; accept :b or :big as bigint for compactness
 (defun fix (n signed bitwidth)
+  "Make fix num. accept :b or :big as bigint for compactness"
   (make-instance 'fix :inner n :signed signed
                  :bitwidth (case bitwidth (:b :big) (t bitwidth))))
 
@@ -463,9 +469,10 @@
                      (inner (value cond))
                      (context cond)))))
 
-; Check if value's inner fits in it's type def
-; TODO(liam) make unsigned values wrap
-(defgeneric check-and-correct-overflow (n context))
+(defgeneric check-and-correct-overflow (n context)
+  (:documentation
+    "n should class val. Checks if it's value fits in its type specifier or
+     raises overflow warn. context is passed through to warning"))
 (defmethod check-and-correct-overflow (n context))
 (defmethod check-and-correct-overflow ((n fix) context)
   (when (not (eq (bitwidth n) :big))
@@ -500,19 +507,21 @@
       :big
       (max a b)))
 
-; Make a and b the same type via coercion
-; float+fix=float
-; fix+fix=signed if either are signed
-;        =max(a bitwidth, b bitwidth)
-;        =bigint if either are bigint
-(defgeneric unify (a b))
-(defmethod unify ((a fix) (b flt))
+(defgeneric unify-types (a b)
+  (:documentation
+   "make a and b the same type via coercion
+    float+fix=float
+    fix+fix=signed if either are signed
+           =max(a bitwidth, b bitwidth)
+           =bigint if either are bigint"))
+
+(defmethod unify-types ((a fix) (b flt))
   (values (flt (coerce (inner a) 'double-float)) b))
-(defmethod unify ((a flt) (b fix))
+(defmethod unify-types ((a flt) (b fix))
   (values a (flt (coerce (inner b) 'double-float))))
-(defmethod unify ((a flt) (b flt))
+(defmethod unify-types ((a flt) (b flt))
   (values a b))
-(defmethod unify ((a fix) (b fix))
+(defmethod unify-types ((a fix) (b fix))
   (let ((max-bw (max-bitwidth (bitwidth a) (bitwidth b)))
         (either-signed (or (signed-p a) (signed-p b))))
     (let* ((a (fix (inner a) either-signed max-bw))
@@ -525,37 +534,39 @@
 
 #+nil
 (multiple-value-list
-  (unify
+  (unify-types
     (fix 69 t 8)
     (fix 129 nil 8)))
 
 #+nil
 (multiple-value-list
-  (unify
+  (unify-types
     (fix 15 nil 8)
     (fix 170 nil 8)))
 
 #+nil
 (multiple-value-list
-  (unify
+  (unify-types
     (make-instance 'fix :inner 255 :signed nil :bitwidth 8)
     (make-instance 'fix :inner 1 :signed t :bitwidth 8)))
 
 #+nil
 (multiple-value-list
-  (unify
+  (unify-types
     (make-instance 'flt :inner 1.4d0)
     (make-instance 'fix :inner 129 :signed nil :bitwidth 8)))
 
 ;;;; SERIALIZE/DESERIALIZE ;;;;
 
+(defgeneric to-readable-form (obj)
+  (:documentation "Make obj a form that can be printed and read back with (read)"))
 (defmethod to-readable-form ((n fix))
   (list (inner n) (signed-p n) (case (bitwidth n) (:big :b) (t (bitwidth n)))))
-
 (defmethod to-readable-form ((n flt))
   (list (inner n)))
 
 (defun read-val (form)
+  "Read back to class val from serialized form"
   (etypecase (car form)
     (integer (destructuring-bind (val signed bitwidth) form
                (fix val signed bitwidth)))
@@ -566,24 +577,30 @@
 
 (defclass settings ()
   ((ibase :initarg :ibase :initform (error "required") :accessor settings-ibase)
+   (obase :initarg :obase :initform (error "required") :accessor settings-obase)
    (itype :initarg :itype :initform (error "required") :accessor settings-itype)))
 
 (defmethod to-readable-form ((s settings))
-  (list :ibase (settings-ibase s) :itype (to-readable-form (settings-itype s))))
+  (list
+    :ibase (settings-ibase s)
+    :obase (settings-obase s)
+    :itype (to-readable-form (settings-itype s))))
 
 (defun read-settings (form)
   (make-instance
     'settings
     :ibase (getf form :ibase)
+    :obase (getf form :obase)
     :itype (read-val (getf form :itype))))
 
 #+nil
-(read-settings '(:ibase 10 :itype (0 t 32)))
+(read-settings '(:ibase 10 :obase 10 :itype (0 t 32)))
 
 (defmethod copy-of ((s settings))
   (make-instance
     'settings
     :ibase (settings-ibase s)
+    :obase (settings-obase s)
     :itype (settings-itype s)))
 
 (defclass history-entry ()
@@ -613,7 +630,7 @@
   (make-instance
     'history-entry
     :expr "1+2"
-    :settings (make-instance 'settings :ibase 10 :itype (fix 0 t 32))
+    :settings (make-instance 'settings :ibase 10 :obase 10 :itype (fix 0 t 32))
     :state :ok
     :result (fix 3 t 32)))
 
@@ -634,41 +651,25 @@
                  :history (mapcar #'read-history-entry (getf form :history))
                  :settings (read-settings (getf form :settings))))
 
-
-; The current settings
-(defparameter *settings*
-  (make-instance
-    'settings
-    :ibase 10
-    :itype (fix 0 t :big)))
-
 (defparameter *session*
   (make-instance
     'session
     :settings (make-instance
                 'settings
                 :ibase 10
+                :obase 10
                 :itype (fix 0 t :big))))
 
-; Result, mentioned below, is (cons code result) where code can be :fail or
-; :result
 (defun commit-result (input result-cons notes)
+  "result-cons, mentioned below, is (cons code result) where code can be :fail or
+  :result"
   (push (make-instance 'history-entry
                        :expr input
-                       :settings (copy-of *settings*)
+                       :settings (copy-of (session-settings *session*))
                        :state (car result-cons)
                        :result (cdr result-cons)
                        :notes notes)
         (session-history *session*)))
-
-(defun parse-eval-commit (input)
-  (let ((res (eval-string input)))
-    (commit-result input res "TODO catch warns/notes")))
-
-#+nil
-(parse-eval-commit "2+2")
-#+nil
-(parse-eval-commit "34534*098+098345+09384+834*3425")
 
 #+nil
 (read-session (to-readable-form *session*))
@@ -689,31 +690,42 @@
   ; srcmap) are passed. Must set coerce/unwrap to nil as well.
   (eval-args t))
 
-(defun eval-atom (atom-expr)
+(defun eval-literal-atom (atom-expr)
+  "Eval atom that is value literal (not expr or var). Returns class val ONLY,
+  not result-cons"
   (let ((val (car atom-expr)))
     (etypecase val
       ; ints become default type (even if its float)
-      (integer (same-type-new-value (settings-itype *settings*) val))
-      ; floats must always be floats
+      (integer (same-type-new-value (settings-itype (session-settings *session*)) val))
+      ; floats must always be floats to avoid stupid coercions
       (float (flt val)))))
 
 #+nil
-(eval-atom '(1))
-(eval-atom '(1d0))
+(eval-literal-atom '(1))
+(eval-literal-atom '(1d0))
 #+nil
-(let ((*settings* (make-instance 'settings :ibase 10 :itype (flt 0))))
-  (eval-atom '(1)))
-#+nil
-(let ((*settings* (make-instance 'settings :ibase 10 :itype (fix 0 t 32))))
-  (eval-atom '(1)))
+(let ((*session*
+        (make-instance
+          'session
+          :settings (make-instance 'settings :ibase 10 :obase 10 :itype (flt 0)))))
+  (eval-literal-atom '(1)))
 
+#+nil
+(let ((*session*
+        (make-instance
+          'session
+          :settings (make-instance 'settings :ibase 10 :obase 10 :itype (fix 0 t 32)))))
+  (eval-literal-atom '(1)))
 
 (defun eval-fn (fn-expr)
+  "Evaluate function call. returns result-cons (status . result)"
   (let* ((fn-name (caar fn-expr))
          (builtin (cdr (assoc fn-name *builtins* :test #'equal)))
-         ; eval args
+         ; Eval args if applicable. Eval all args first. Then seaerch for any
+         ; :fail results. If there are, return (:fail . info) from that arg up
+         ; the call stack
          (args (if (builtin-eval-args builtin)
-                   (let* ((try-args (mapcar #'eval-expr-or-atom (cdr fn-expr)))
+                   (let* ((try-args (mapcar #'eval-ast-node (cdr fn-expr)))
                           (first-error (find-if (lambda (a) (eq :fail (car a))) try-args)))
                      (when first-error
                        (return-from eval-fn first-error))
@@ -721,7 +733,7 @@
                    (mapcar #'quote-expr (cdr fn-expr))))
          (coerced-args ;coerce args if applicable
            (if (and (builtin-coerce-args builtin) (> (length args) 1))
-               (multiple-value-list (apply #'unify args))
+               (multiple-value-list (apply #'unify-types args))
                args))
          ; unwrap actual number out of class val if applicable
          (maybe-unwrapped-args
@@ -742,36 +754,40 @@
         (format nil "type ~a as part of ~a operation" (typename (first args)) fn-name)))
     (cons :ok wrapped-result)))
 
-
 #+nil
 (defparameter *egatom* (second (multiple-value-list (parse (expr) "69"))))
 #+nil
 (defparameter *egexpr* (second (multiple-value-list (parse (expr) "69+420"))))
 
 #+nil
-(eval-expr-or-atom (second (multiple-value-list (parse (expr) "2+3"))))
+(eval-ast-node (second (multiple-value-list (parse (expr) "2+3"))))
 
-(defun eval-expr-or-atom (expr)
-  (let ((left (car expr)))
+(defun eval-ast-node (node)
+  "Eval node, where node can be
+  1. number literal (99 start . end)
+  2. function application ((fn start . end) (arg1 start . end) ...)
+  3. variable (varname start . end)"
+  (let ((left (car node)))
     (etypecase left
-      (number (cons :ok (eval-atom expr)))
-      (list (eval-fn expr))
+      (number (cons :ok (eval-literal-atom node)))
+      (list (eval-fn node))
       (string (cons :fail (format nil "unknown var ~a" left))))))
 
-; strip away source mappings, but do not eval
 (defun quote-expr (expr)
+  "Strip away source mappings, but do not eval. Converts sourcemapped single
+  value (val start . end) to value"
   (let ((left (car expr)))
     (etypecase left
       (list (error "nested quoted args not supported"))
       (t (car expr)))))
 
-; returns (code . result)
 (defun eval-string (str)
+  "Parse string and evaluate. returns (code . result)"
   (multiple-value-bind (endi res) (parse (expr) str)
     (case res
       (:fail (cons :fail "parse error"))
       (otherwise (if (= endi (length str))
-                     (eval-expr-or-atom res)
+                     (eval-ast-node res)
                      (cons :fail (format nil "unexpected char ~c (at ~d)" (elt str endi) endi)))))))
 
 #+nil
@@ -781,12 +797,16 @@
 ; BUILT-IN FUNCTIONS
 
 (defun bits-to-signed (n n-bits)
+  "Convert a lisp bigint value to what it would be if interpreted as an n-bits
+  long signed int"
   (let ((truncated (ldb (byte n-bits 0) n)))
     (if (logbitp (1- n-bits) truncated) ; check sign bit
         (- truncated (ash 1 n-bits)) ; subtract 2^N if negative
         truncated)))
 
 (defun make-fix-cast (to-signed to-width)
+  "Generate a function that takes a class val and casts it to the type
+  (fix * to-signed to-width)"
   (lambda (source)
     (let*
       ((as-fix
@@ -800,22 +820,26 @@
         to-width))))
 
 (defun make-fix-builtin-assoc (to-signed to-width)
+  "Generate a struct builtin that casts values to (fix * to-signed to-width)"
   (let ((name (format nil "~c~d" (if to-signed #\i #\u) to-width)))
     (cons name (make-builtin
                  :fn (make-fix-cast to-signed to-width)
                  :coerce-args nil
                  :unwrap-args nil))))
 
-(defun float-cast (source) (flt (inner source)))
+(defun float-cast (source)
+  "Cast class val to float"
+  (flt (inner source)))
 
-(defgeneric divide-builtin (num den))
+(defgeneric divide-builtin (num den)
+  (:documentation
+   "Impl of / function. Must specialize for integer vs float division"))
 (defmethod divide-builtin ((num flt) (den flt))
   (flt (/ (inner num) (inner den))))
 (defmethod divide-builtin ((num fix) (den fix))
   (multiple-value-bind (res rem) (floor (inner num) (inner den))
     (declare (ignore rem))
     (same-type-new-value num res)))
-
 
 (defparameter *builtins*
   (list
@@ -825,6 +849,7 @@
     (cons #\/ (make-builtin :fn #'divide-builtin
                             :coerce-args t
                             :unwrap-args nil))
+    (cons #\^ (make-builtin :fn #'expt))
     (make-fix-builtin-assoc nil 8)
     (make-fix-builtin-assoc nil 16)
     (make-fix-builtin-assoc nil 32)
@@ -858,37 +883,30 @@
 #+nil
 (eval-string "u8(256)+33")
 #+nil
-(pretty-print-parse-tree (second (multiple-value-list
-                                   (parse (expr) "xor(u8(0x0f), u8(0xaa))"))))
+(pretty-print-parse-tree
+  (second
+    (multiple-value-list
+      (parse (expr) "xor(u8(0x0f), u8(0xaa))"))))
 
 #+nil
 (parse (expr)"16 << 2")
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-; REPL
-(sb-alien:define-alien-routine add-history sb-alien:void (line sb-alien:c-string))
-(sb-alien:define-alien-routine readline sb-alien:c-string (prompt sb-alien:c-string))
-(sb-alien:define-alien-routine rl-get-screen-size sb-alien:void (rows sb-alien:int :out) (cols sb-alien:int :out))
-(sb-alien:define-alien-routine rl-redisplay sb-alien:void)
-(sb-alien:define-alien-variable rl-line-buffer sb-alien:c-string)
-(sb-alien:define-alien-variable rl-redisplay-function (* (function sb-alien:void)))
-
-(defun load-libs ()
-  (sb-alien:load-shared-object "libreadline.so" :dont-save t)
-  (sb-alien:load-shared-object "libhistory.so" :dont-save t))
-
-(defparameter *prompt* (format nil "~C[31mcalc> ~C[0m" #\escape #\escape))
+; HUMAN OUTPUT
 
 (defun display-eval-result (value)
+  "format a class val for the user"
   (format nil "~a (~a)" (value-string value) (typename value)))
 
 (defun settings-displayable ()
+  "format session settings for the user"
   (format nil "ibase=~d itype=~a"
-          (settings-ibase *settings*)
-          (typename (settings-itype *settings*))))
+          (settings-ibase (session-settings *session*))
+          (typename (settings-itype (session-settings *session*)))))
 
-; return (values display warnings)
 (defun eval-to-displayable (str)
+  "parse and eval str. return (values displayable-result warnings), where
+  warnings is a list of warning strings returned during eval"
   (let ((warnings (list)))
     (handler-bind
         ((warning (lambda (cnd)
@@ -903,6 +921,22 @@
             (:ok (format nil "~a (~a)" (value-string value) (typename value)))
             (:fail (if (plusp (length str)) value "")))
           (nreverse warnings))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; FANCY REPL
+
+(sb-alien:define-alien-routine add-history sb-alien:void (line sb-alien:c-string))
+(sb-alien:define-alien-routine readline sb-alien:c-string (prompt sb-alien:c-string))
+(sb-alien:define-alien-routine rl-get-screen-size sb-alien:void (rows sb-alien:int :out) (cols sb-alien:int :out))
+(sb-alien:define-alien-routine rl-redisplay sb-alien:void)
+(sb-alien:define-alien-variable rl-line-buffer sb-alien:c-string)
+(sb-alien:define-alien-variable rl-redisplay-function (* (function sb-alien:void)))
+
+(defun load-libs ()
+  (sb-alien:load-shared-object "libreadline.so" :dont-save t)
+  (sb-alien:load-shared-object "libhistory.so" :dont-save t))
+
+(defparameter *fancy-prompt* (format nil "~C[31mcalc> ~C[0m" #\escape #\escape))
 
 #+nil
 (eval-to-displayable "u8(255)+u8(1)")
@@ -928,7 +962,7 @@
   (finish-output t)
   (rl-redisplay))
 
-(defun enter-line (line)
+(defun eval-and-print-line-fancy (line)
   (multiple-value-bind (display warns) (eval-to-displayable line)
     (loop :for w :in warns
           :do (format t "~C[93m~A~C[0m"
@@ -945,22 +979,44 @@
             #\linefeed #\linefeed))
   (add-history line))
 
-(defun repl ()
-  (format t "~%") ; initial newline for status
-  (loop
-    (let ((line (readline *prompt*)))
-      (cond
-        ((null line) ; EOF
-         (return-from repl))
-        ((zerop (length line))) ; empty: do nothing
-        (t (enter-line line))))))
-
-(defun main ()
+(defun fancy-repl-main ()
   (load-libs)
   (setf rl-redisplay-function
         (sb-alien:alien-sap
           (sb-alien:alien-callable-function 'realtime-status-callback)))
-  (repl))
+  (format t "~%") ; initial newline for status
+  (loop
+    (let ((line (readline *fancy-prompt*)))
+      (cond
+        ((null line) ; EOF
+         (return-from fancy-repl-main))
+        ((zerop (length line))) ; empty: do nothing
+        (t (eval-and-print-line-fancy line))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; CLASSIC REPL
+
+(defun eval-and-print-line (line)
+  (multiple-value-bind (display warns) (eval-to-displayable line)
+    (format t "~a~%" display)
+    (loop :for w :in warns
+          :do (format t "warning: ~a~%" w))))
+  
+(defun classic-repl-main ()
+  (loop
+    (format t "calc> ")
+    (finish-output t)
+    (multiple-value-bind (line eof) (read-line *standard-input* nil)
+      (when eof
+        (return-from classic-repl-main))
+      (let ((line (string-trim '(#\space #\tab #\linefeed #\return) line)))
+        (cond
+          ((zerop (length line)))
+          (t (eval-and-print-line line)))))))
 
 
-(main)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; MAIN
+
+;(fancy-repl-main)
+;(classic-repl-main)
