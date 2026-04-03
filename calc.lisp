@@ -435,7 +435,30 @@
   (format stream "~d:~a" (inner obj) (typename obj)))
 
 (defmethod value-string ((obj fix))
-  (format nil "~d" (inner obj)))
+  "Respect the obase for fix"
+  (let* ((obase (settings-obase (session-settings *session*)))
+         (prefix
+           (case obase
+             (10 "")
+             (2 "0b")
+             (8 "0o")
+             (16 "0x")
+             (otherwise (format nil "~d#" obase)))))
+    (format nil "~a~a" prefix (write-to-string (inner obj) :base obase))))
+
+#+nil
+(value-string (fix 25 t :big))
+
+#+nil
+(let ((*session*
+        (make-instance
+          'session
+          :settings (make-instance
+                      'settings
+                      :ibase 10
+                      :obase 16
+                      :itype (fix 26 t :b)))))
+  (value-string (fix 255 t :big)))
 
 ;;;; FLOAT ;;;;
 (defclass flt (val) ())
@@ -841,6 +864,29 @@
     (declare (ignore rem))
     (same-type-new-value num res)))
 
+(defmethod set-itype (type-str)
+  (let ((typ
+          (cond
+            ((string-equal type-str "float") (flt 0d0))
+            ((string-equal type-str "flt") (flt 0d0))
+            ((string-equal type-str "f") (flt 0d0))
+            ((string-equal type-str "i") (fix 0 t :b))
+            ((string-equal type-str "int") (fix 0 t :b))
+            ((string-equal type-str "big") (fix 0 t :b))
+            ((string-equal type-str "bigint") (fix 0 t :b))
+            (t
+              (fix 0
+                   (case (elt type-str 0)
+                     (#\i t)
+                     (#\I t)
+                     (#\u nil)
+                     (#\U nil)
+                     (otherwise t))
+                   (or
+                     (parse-integer (subseq type-str 1) :junk-allowed t)
+                     32))))))
+    (setf (settings-itype (session-settings *session*)) typ)))
+
 (defparameter *builtins*
   (list
     (cons #\+ (make-builtin :fn #'+))
@@ -868,7 +914,25 @@
                    :fn (lambda (args) (print args) (fix 0 1 :b))
                    :coerce-args nil
                    :unwrap-args nil
-                   :eval-args nil))))
+                   :eval-args nil))
+    (cons "ibase" (make-builtin
+                    :fn (lambda (base)
+                          (setf (settings-ibase (session-settings *session*)) base))
+                    :coerce-args nil
+                    :unwrap-args t
+                    :eval-args t))
+    (cons "obase" (make-builtin
+                    :fn (lambda (base)
+                          (setf (settings-obase (session-settings *session*)) base))
+                    :coerce-args nil
+                    :unwrap-args t
+                    :eval-args t))
+    (cons "itype" (make-builtin
+                    :fn #'set-itype
+                    :coerce-args nil
+                    :unwrap-args nil
+                    :eval-args nil))))
+
 
 #+nil
 (eval-string "xor(u8(0x0f), u8(0xaa))")
@@ -998,10 +1062,10 @@
 
 (defun eval-and-print-line (line)
   (multiple-value-bind (display warns) (eval-to-displayable line)
-    (format t "~a~%" display)
+    (format t "  = ~a~%" display)
     (loop :for w :in warns
           :do (format t "warning: ~a~%" w))))
-  
+
 (defun classic-repl-main ()
   (loop
     (format t "calc> ")
@@ -1019,4 +1083,4 @@
 ; MAIN
 
 ;(fancy-repl-main)
-;(classic-repl-main)
+(classic-repl-main)
