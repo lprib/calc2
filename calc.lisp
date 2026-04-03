@@ -1,6 +1,7 @@
 (defvar *input*)
 (defvar *session*)
 (defvar *builtins*)
+(defparameter *speculatively-evaling* nil)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; COMBINATORS
 
@@ -345,10 +346,15 @@
       (srcmap (predicate-chars #'alphanumericp))
       (surrounded
         (surrounded (whitespace) (lit "("))
-        (fn-call-arglist)
+        (opt (fn-call-arglist))
         (surrounded (whitespace) (lit ")"))))
     (lambda (res)
       (cons (car res) (cadr res)))))
+
+#+nil
+(parse (fn-call) "function(a, b, c)")
+#+nil
+(parse (fn-call) "function()")
 
 (defun noparen-fn-call ()
   (map-res
@@ -711,7 +717,9 @@
   (unwrap-args t)
   ; Evaluate args before passing to fn. If nil, verbatim parsed args (without
   ; srcmap) are passed. Must set coerce/unwrap to nil as well.
-  (eval-args t))
+  (eval-args t)
+  ; helptext
+  (help ""))
 
 (defun eval-literal-atom (atom-expr)
   "Eval atom that is value literal (not expr or var). Returns class val ONLY,
@@ -848,7 +856,8 @@
     (cons name (make-builtin
                  :fn (make-fix-cast to-signed to-width)
                  :coerce-args nil
-                 :unwrap-args nil))))
+                 :unwrap-args nil
+                 :help (format nil "cast to ~a~d" (if to-signed #\i #\u) to-width)))))
 
 (defun float-cast (source)
   "Cast class val to float"
@@ -864,7 +873,7 @@
     (declare (ignore rem))
     (same-type-new-value num res)))
 
-(defmethod set-itype (type-str)
+(defun set-itype (type-str)
   (let ((typ
           (cond
             ((string-equal type-str "float") (flt 0d0))
@@ -887,15 +896,28 @@
                      32))))))
     (setf (settings-itype (session-settings *session*)) typ)))
 
+(defun show-a-help (builtin-assoc)
+  (format t "~a~20t- ~a~%" (car builtin-assoc) (builtin-help (cdr builtin-assoc))))
+
+(defun show-help (&rest args)
+  (declare (ignore args))
+  (unless *speculatively-evaling*
+    (loop :for b :in *builtins*
+          :do (show-a-help b)))
+  (fix 0 t :b))
+
 (defparameter *builtins*
   (list
-    (cons #\+ (make-builtin :fn #'+))
-    (cons #\- (make-builtin :fn #'-))
-    (cons #\* (make-builtin :fn #'*))
+    (cons #\+ (make-builtin :fn #'+ :help "add"))
+    (cons #\- (make-builtin :fn #'- :help "subtract"))
+    (cons #\* (make-builtin :fn #'* :help "multiply"))
     (cons #\/ (make-builtin :fn #'divide-builtin
                             :coerce-args t
-                            :unwrap-args nil))
-    (cons #\^ (make-builtin :fn #'expt))
+                            :unwrap-args nil
+                            :help "integer divide or float divide"))
+    (cons #\% (make-builtin :fn #'rem :help "remainder (C %)"))
+    (cons "mod" (make-builtin :fn #'mod :help "euclidian modulus"))
+    (cons #\^ (make-builtin :fn #'expt :help "exponent"))
     (make-fix-builtin-assoc nil 8)
     (make-fix-builtin-assoc nil 16)
     (make-fix-builtin-assoc nil 32)
@@ -904,34 +926,38 @@
     (make-fix-builtin-assoc t 16)
     (make-fix-builtin-assoc t 32)
     (make-fix-builtin-assoc t 64)
-    (cons "float" (make-builtin :fn #'float-cast :coerce-args nil :unwrap-args nil))
-    (cons #\& (make-builtin :fn #'logand))
-    (cons #\| (make-builtin :fn #'logior))
-    (cons "xor" (make-builtin :fn #'logxor))
-    (cons ">>" (make-builtin :fn (lambda (a b) (ash a (- b)))))
-    (cons "<<" (make-builtin :fn #'ash))
-    (cons "test" (make-builtin
-                   :fn (lambda (args) (print args) (fix 0 1 :b))
-                   :coerce-args nil
-                   :unwrap-args nil
-                   :eval-args nil))
+    (cons "float" (make-builtin :fn #'float-cast :coerce-args nil :unwrap-args nil :help "cast to float"))
+    (cons #\& (make-builtin :fn #'logand :help "bitwise and"))
+    (cons #\| (make-builtin :fn #'logior :help "bitwise or"))
+    (cons "xor" (make-builtin :fn #'logxor :help "bitwise xor"))
+    (cons ">>" (make-builtin :fn (lambda (a b) (ash a (- b))) :help "arithmatic right shift"))
+    (cons "<<" (make-builtin :fn #'ash :help "arithmatic left shift"))
     (cons "ibase" (make-builtin
                     :fn (lambda (base)
                           (setf (settings-ibase (session-settings *session*)) base))
                     :coerce-args nil
                     :unwrap-args t
-                    :eval-args t))
+                    :eval-args t
+                    :help "set default parsed integer base"))
     (cons "obase" (make-builtin
                     :fn (lambda (base)
                           (setf (settings-obase (session-settings *session*)) base))
                     :coerce-args nil
                     :unwrap-args t
-                    :eval-args t))
+                    :eval-args t
+                    :help "set printed integer base"))
     (cons "itype" (make-builtin
                     :fn #'set-itype
                     :coerce-args nil
                     :unwrap-args nil
-                    :eval-args nil))))
+                    :eval-args nil
+                    :help "set default number type (float, int, u#, i#)"))
+    (cons "help" (make-builtin
+                   :fn #'show-help
+                   :coerce-args nil
+                   :unwrap-args nil
+                   :eval-args nil
+                   :help "show this help"))))
 
 
 #+nil
@@ -987,13 +1013,48 @@
           (nreverse warnings))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-; FANCY REPL
+; BITFIELD
 
+(defun display-bit (i bit)
+  "terminal escape to highlight bit index if bit is t"
+  (format t "~c[~am~2d~c[0m "
+          #\escape
+          (if bit "7" "0") ; 7 Reverse video or invert, 0 normal
+          i
+          #\escape))
+
+(defun display-bitfield (val)
+  "display bitfield with terminal escapes"
+  (let ((n (inner val)))
+    (loop :for i :from (1- (bitwidth val)) :downto 0
+          :do (display-bit i (plusp (ldb (byte 1 i) n)))
+          :when (zerop (mod i 8))
+            :do (format t "  ")
+          :when (zerop (mod i 16))
+            :do (format t "~%"))))
+
+#+nil
+(display-bitfield (fix 983745 t 32))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; FANCY REPL
+; CSI n A   CUU   Cursor Up 
+; CSI n B   CUD   Cursor Down 
+; CSI n K 	EL 	Erase in Line (n=0 cursor to end, n=1 cursor to start, n=2 whole line)
+
+;;;; GNU READLINE BINDINGS ;;;;
+
+; extern void add_history (const char *);
 (sb-alien:define-alien-routine add-history sb-alien:void (line sb-alien:c-string))
+; extern char *readline (const char *);
 (sb-alien:define-alien-routine readline sb-alien:c-string (prompt sb-alien:c-string))
+; extern void rl_get_screen_size (int *, int *);
 (sb-alien:define-alien-routine rl-get-screen-size sb-alien:void (rows sb-alien:int :out) (cols sb-alien:int :out))
+; extern void rl_redisplay (void);
 (sb-alien:define-alien-routine rl-redisplay sb-alien:void)
+; extern char *rl_line_buffer;
 (sb-alien:define-alien-variable rl-line-buffer sb-alien:c-string)
+; extern rl_voidfunc_t *rl_redisplay_function;
 (sb-alien:define-alien-variable rl-redisplay-function (* (function sb-alien:void)))
 
 (defun load-libs ()
@@ -1005,42 +1066,46 @@
 #+nil
 (eval-to-displayable "u8(255)+u8(1)")
 
+; TODO(liam) need to sort out realtime display of bitfield with dynamic height
 (sb-alien:define-alien-callable realtime-status-callback sb-alien:void ()
-  (multiple-value-bind (display warns) (eval-to-displayable rl-line-buffer)
-    (let* ((settings (settings-displayable))
-           (status (format nil "~C[1;33m= ~a ~C[1;93m~a~C[22;90m[~a]~C[0m"
-                           #\escape
-                           display
-                           #\escape
-                           (if warns "[WARN]" "")
-                           #\escape
-                           settings
-                           #\escape)))
-      (format t "~C[s~C[1A~C~C[2K~A~C[u"
-          #\escape ; save cursor
-          #\escape ; up 1 line
-          #\return ; carriage return (col 0)
-          #\escape ; erase line
-          status ; status string
-          #\escape))) ; restore cursor
-  (finish-output t)
+  (let ((*speculatively-evaling* t))
+    (multiple-value-bind (display warns) (eval-to-displayable rl-line-buffer)
+      (let* ((settings (settings-displayable))
+             (status (format nil "~C[1;96m= ~a ~C[1;93m~a~C[22;90m[~a]~C[0m"
+                             #\escape
+                             display
+                             #\escape
+                             (if warns "[WARN]" "")
+                             #\escape
+                             settings
+                             #\escape)))
+        (format t "~C[s~C[1A~C~C[2K~A~C[u"
+            #\escape ; save cursor
+            #\escape ; up 1 line
+            #\return ; carriage return (col 0)
+            #\escape ; erase line
+            status ; status string
+            #\escape)))) ; restore cursor
+  (finish-output *standard-output*)
   (rl-redisplay))
 
 (defun eval-and-print-line-fancy (line)
   (multiple-value-bind (display warns) (eval-to-displayable line)
-    (loop :for w :in warns
-          :do (format t "~C[93m~A~C[0m"
-                      #\escape
-                      w
-                      #\escape))
+    ;(when warns
+      ;(format t "~%~%~%~%~%"))
     ; TODO(liam): this overwrites the warning above. How can We maintain the
     ; CLI and print arbitrary amount of lines?
-    (format t "~C[2A~C~C[2K~A~C~C[2K~A~C~C"
+    (format t "~C[2A~C~C[2K~A~C~C[2K~A~%"
             #\escape #\return #\escape
             line
             #\linefeed #\escape
-            (format nil "~C[32m  = ~a~C[0m" #\escape display #\escape)
-            #\linefeed #\linefeed))
+            (format nil "~C[32m  = ~a~C[0m" #\escape display #\escape))
+    (loop :for w :in warns
+          :do (format t "~C[93m~A~C[0m~%"
+                      #\escape
+                      w
+                      #\escape))
+    (format t "~%"))
   (add-history line))
 
 (defun fancy-repl-main ()
@@ -1069,7 +1134,7 @@
 (defun classic-repl-main ()
   (loop
     (format t "calc> ")
-    (finish-output t)
+    (finish-output *standard-output*)
     (multiple-value-bind (line eof) (read-line *standard-input* nil)
       (when eof
         (return-from classic-repl-main))
@@ -1082,5 +1147,9 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; MAIN
 
-;(fancy-repl-main)
-(classic-repl-main)
+(defun main ()
+  (let ((basename (pathname-name (pathname (first sb-ext:*posix-argv*)))))
+    (cond
+      ((string-equal basename "ccalc") (classic-repl-main))
+      ((string-equal basename "fcalc") (fancy-repl-main)))))
+
