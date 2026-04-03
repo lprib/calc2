@@ -751,6 +751,7 @@
 (defun eval-fn (fn-expr)
   "Evaluate function call. returns result-cons (status . result)"
   (let* ((fn-name (caar fn-expr))
+         ; TODO(liam) handle function not found
          (builtin (cdr (assoc fn-name *builtins* :test #'equal)))
          ; Eval args if applicable. Eval all args first. Then seaerch for any
          ; :fail results. If there are, return (:fail . info) from that arg up
@@ -1058,8 +1059,12 @@
 (sb-alien:define-alien-variable rl-redisplay-function (* (function sb-alien:void)))
 
 (defun load-libs ()
-  (sb-alien:load-shared-object "libreadline.so" :dont-save t)
-  (sb-alien:load-shared-object "libhistory.so" :dont-save t))
+  (handler-case
+      (progn
+        (sb-alien:load-shared-object "libreadline.so" :dont-save t)
+        (sb-alien:load-shared-object "libhistory.so" :dont-save t)
+        t)
+    (error () nil)))
 
 (defparameter *fancy-prompt* (format nil "~C[31mcalc> ~C[0m" #\escape #\escape))
 
@@ -1109,7 +1114,10 @@
   (add-history line))
 
 (defun fancy-repl-main ()
-  (load-libs)
+  (unless (load-libs)
+    (format t "Unable to load libreadline.so and libhistory.so~%")
+    (return-from fancy-repl-main))
+
   (setf rl-redisplay-function
         (sb-alien:alien-sap
           (sb-alien:alien-callable-function 'realtime-status-callback)))
