@@ -365,6 +365,21 @@
 (defun var-or-symbol ()
   (srcmap (predicate-chars #'alphanumericp)))
 
+; '(:assignment ("varname" s . e) (expr))
+(defun var-assignment ()
+  (map-res
+    (seq
+      (surrounded (whitespace) (var-or-symbol))
+      (lit "=")
+      (expr))
+    (lambda (res)
+      (destructuring-bind (var eql-sign expr) res
+        (declare (ignore eql-sign))
+        (list :assign var expr)))))
+
+#+nil
+(parse (var-assignment) "a = 4*5")
+
 (defun pretty-print-parse-tree (tree &optional (indent 0))
  (etypecase (car tree)
    (list
@@ -398,6 +413,18 @@
 (parse (expr) "3+-1.4")
 #+nil
 (parse (expr) "2.0+3")
+
+; TODO(liam) move all parse routings to this. returns (:operation rest)
+; Should only return expr if :expr. If :assign, assign the variable
+(defun top ()
+  (alt
+    (var-assignment)
+    (map-res (expr) (lambda (res) (cons :expr res)))))
+
+#+nil
+(parse (top) "1+1")
+#+nil
+(parse (top) "a=1+1")
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; VALUE/TYPE SYSTEM
