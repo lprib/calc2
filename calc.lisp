@@ -1,3 +1,23 @@
+#| calc.lisp
+Copyright (C) 2026 Liam Pribis
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+|#
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; MUTABLE SPECIALS
+
 (defvar *input*)
 (defvar *session*)
 (defvar *builtins*)
@@ -781,19 +801,24 @@
 (defun eval-fn (fn-expr)
   "Evaluate function call. returns result-cons (status . result)"
   (let* ((fn-name (caar fn-expr))
-         ; TODO(liam) handle function not found
-         (builtin (cdr (assoc fn-name *builtins* :test #'equalp)))
-         ; Eval args if applicable. Eval all args first. Then seaerch for any
-         ; :fail results. If there are, return (:fail . info) from that arg up
-         ; the call stack
-         (args (if (builtin-eval-args builtin)
-                   (let* ((try-args (mapcar #'eval-expr (cdr fn-expr)))
-                          (first-error (find-if (lambda (a) (eq :fail (car a))) try-args)))
-                     (when first-error
-                       (return-from eval-fn first-error))
-                     (mapcar #'cdr try-args))
-                   (mapcar #'quote-expr (cdr fn-expr))))
-         (coerced-args ;coerce args if applicable
+         (builtin (cdr (assoc fn-name *builtins* :test #'equalp))))
+    (unless builtin
+      (return-from eval-fn
+                   (cons :fail
+                         (format nil "unknown function ~a" (string-upcase fn-name)))))
+    (let*
+        ; Eval args if applicable. Eval all args first. Then seaerch for any
+        ; :fail results. If there are, return (:fail . info) from that arg up
+        ; the call stack
+        ((args (if (builtin-eval-args builtin)
+                  (let* ((try-args (mapcar #'eval-expr (cdr fn-expr)))
+                         (first-error (find-if (lambda (a) (eq :fail (car a))) try-args)))
+                    (when first-error
+                      (return-from eval-fn first-error))
+                    (mapcar #'cdr try-args))
+                  (mapcar #'quote-expr (cdr fn-expr))))
+         ;coerce args if applicable
+         (coerced-args
            (if (and (builtin-coerce-args builtin) (> (length args) 1))
                (multiple-value-list (apply #'unify-types args))
                args))
@@ -809,12 +834,13 @@
            (if (builtin-unwrap-args builtin)
                (same-type-new-value (first coerced-args) result)
                result)))
-    ; If builtin takes quoted args, they will not be class val, dont check overflow
-    (when (builtin-eval-args builtin)
-      (check-and-correct-overflow
-        wrapped-result
-        (format nil "type ~a as part of ~a operation" (typename (first args)) fn-name)))
-    (cons :ok wrapped-result)))
+      ; If builtin takes quoted args, they will not be class val, dont check
+      ; overflow
+      (when (builtin-eval-args builtin)
+        (check-and-correct-overflow
+          wrapped-result
+          (format nil "type ~a as part of ~a operation" (typename (first args)) fn-name)))
+      (cons :ok wrapped-result))))
 
 #+nil
 (defparameter *egatom* (second (multiple-value-list (parse (expr) "69"))))
@@ -1029,6 +1055,13 @@
     :allow-call-with-no-args t
     :help "show this help"))
 
+(defun always-float (fn)
+  "given a primitive function, make a function on class val that always returns
+  a (flt) val"
+  (lambda (&rest args)
+    (let ((arg-inners (mapcar #'inner args)))
+      (flt (apply fn arg-inners)))))
+
 (defparameter *builtins*
   (list
     (cons #\+ (make-builtin :fn #'+ :help "add"))
@@ -1038,9 +1071,23 @@
                             :coerce-args t
                             :unwrap-args nil
                             :help "integer divide or float divide"))
+    (cons "abs" (make-builtin :fn #'abs :help "absolute value"))
+    (cons "exp" (make-builtin :fn (always-float #'exp)
+                              :coerce-args nil
+                              :unwrap-args nil
+                              :help "e^x"))
+    (cons "log" (make-builtin :fn (always-float #'log)
+                              :coerce-args nil
+                              :unwrap-args nil
+                              :help "ln(x) or log(x, base)"))
     (cons #\% (make-builtin :fn #'rem :help "remainder (C %)"))
     (cons "mod" (make-builtin :fn #'mod :help "euclidian modulus"))
     (cons #\^ (make-builtin :fn #'expt :help "exponent"))
+    (cons #\& (make-builtin :fn #'logand :help "bitwise and"))
+    (cons #\| (make-builtin :fn #'logior :help "bitwise or"))
+    (cons "xor" (make-builtin :fn #'logxor :help "bitwise xor"))
+    (cons ">>" (make-builtin :fn (lambda (a b) (ash a (- b))) :help "arithmatic right shift"))
+    (cons "<<" (make-builtin :fn #'ash :help "arithmatic left shift"))
     (make-fix-builtin-assoc nil 8)
     (make-fix-builtin-assoc nil 16)
     (make-fix-builtin-assoc nil 32)
@@ -1050,11 +1097,6 @@
     (make-fix-builtin-assoc t 32)
     (make-fix-builtin-assoc t 64)
     (cons "float" (make-builtin :fn #'float-cast :coerce-args nil :unwrap-args nil :help "cast to float"))
-    (cons #\& (make-builtin :fn #'logand :help "bitwise and"))
-    (cons #\| (make-builtin :fn #'logior :help "bitwise or"))
-    (cons "xor" (make-builtin :fn #'logxor :help "bitwise xor"))
-    (cons ">>" (make-builtin :fn (lambda (a b) (ash a (- b))) :help "arithmatic right shift"))
-    (cons "<<" (make-builtin :fn #'ash :help "arithmatic left shift"))
     (cons "ibase" *ibase-builtin*)
     (cons "ib" *ibase-builtin*)
     (cons "obase" *obase-builtin*)
@@ -1097,9 +1139,10 @@
 
 (defun settings-displayable ()
   "format session settings for the user"
-  (format nil "ibase=~d itype=~a"
+  (format nil "ibase=~d itype=~a obase=~a"
           (settings-ibase (session-settings *session*))
-          (typename (settings-itype (session-settings *session*)))))
+          (typename (settings-itype (session-settings *session*)))
+          (settings-obase (session-settings *session*))))
 
 (defun eval-to-displayable (str)
   "parse and eval str. return (values result-val displayable-result warnings), where
@@ -1192,7 +1235,7 @@
 (defun update-bitfield-value (result-val)
   (etypecase result-val
     (fix (setf *bitfield-value* result-val))
-    ;; reset if flow
+    ;; reset if float
     (flt (setf *bitfield-value* (fix 0 t :b)))
     ; keep old value if nil
     (t)))

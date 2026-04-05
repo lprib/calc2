@@ -32,7 +32,7 @@ dependencies, it does not use asdf or quicklisp. The
 makefile simply compile and loads the file, and then does
 (save-lisp-and-die).
 
-$ make fcalc
+$ make && sudo make install
 
 ========================= running ==========================
 
