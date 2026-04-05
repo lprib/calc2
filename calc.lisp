@@ -758,12 +758,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 (defstruct builtin fn
   ; Coerce args to the same type via promotion
-  (coerce-args t)
+  (coerce t)
   ; Only pass inner value of args to the fn, otherwise pass (class val)
-  (unwrap-args t)
+  (unwrap t)
   ; Evaluate args before passing to fn. If nil, verbatim parsed args (without
   ; srcmap) are passed. Must set coerce/unwrap to nil as well.
-  (eval-args t)
+  (eval t)
   ; If we see a "Variable" invocation with this fn name, call it. For stuff
   ; like "help" which should be treated as a function, not a variable if it's
   ; encountered on its own
@@ -798,6 +798,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
           :settings (make-instance 'settings :ibase 10 :obase 10 :itype (fix 0 t 32)))))
   (eval-literal-atom '(1)))
 
+; TODO(liam) all of this wrap/unwrap could be replaced with thunks areound the
+; builtin functions
 (defun eval-fn (fn-expr)
   "Evaluate function call. returns result-cons (status . result)"
   (let* ((fn-name (caar fn-expr))
@@ -810,7 +812,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
         ; Eval args if applicable. Eval all args first. Then seaerch for any
         ; :fail results. If there are, return (:fail . info) from that arg up
         ; the call stack
-        ((args (if (builtin-eval-args builtin)
+        ((args (if (builtin-eval builtin)
                   (let* ((try-args (mapcar #'eval-expr (cdr fn-expr)))
                          (first-error (find-if (lambda (a) (eq :fail (car a))) try-args)))
                     (when first-error
@@ -819,24 +821,24 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                   (mapcar #'quote-expr (cdr fn-expr))))
          ;coerce args if applicable
          (coerced-args
-           (if (and (builtin-coerce-args builtin) (> (length args) 1))
+           (if (and (builtin-coerce builtin) (> (length args) 1))
                (multiple-value-list (apply #'unify-types args))
                args))
          ; unwrap actual number out of class val if applicable
          (maybe-unwrapped-args
-           (if (builtin-unwrap-args builtin)
+           (if (builtin-unwrap builtin)
                (mapcar #'inner coerced-args)
                coerced-args))
          ; run fn
          (result (apply (builtin-fn builtin) maybe-unwrapped-args))
          ; rewrap back in class val if applicable
          (wrapped-result
-           (if (builtin-unwrap-args builtin)
+           (if (builtin-unwrap builtin)
                (same-type-new-value (first coerced-args) result)
                result)))
       ; If builtin takes quoted args, they will not be class val, dont check
       ; overflow
-      (when (builtin-eval-args builtin)
+      (when (builtin-eval builtin)
         (check-and-correct-overflow
           wrapped-result
           (format nil "type ~a as part of ~a operation" (typename (first args)) fn-name)))
@@ -951,8 +953,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
   (let ((name (format nil "~c~d" (if to-signed #\i #\u) to-width)))
     (cons name (make-builtin
                  :fn (make-fix-cast to-signed to-width)
-                 :coerce-args nil
-                 :unwrap-args nil
+                 :coerce nil :unwrap nil
                  :help (format nil "cast to ~a~d" (if to-signed #\i #\u) to-width)))))
 
 (defun float-cast (source)
@@ -1022,9 +1023,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
           (declare (ignore args))
           (if *speculatively-evaling* 0
             (setf (settings-ibase (session-settings *session*)) base)))
-    :coerce-args nil
-    :unwrap-args t
-    :eval-args t
+    :coerce nil :unwrap t :eval t
     :help "set default parsed integer base"))
 
 (defparameter *obase-builtin*
@@ -1033,25 +1032,15 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
           (declare (ignore args))
           (if *speculatively-evaling* 0
             (setf (settings-obase (session-settings *session*)) base)))
-    :coerce-args nil
-    :unwrap-args t
-    :eval-args t
+    :coerce nil :unwrap t :eval t
     :help "set printed integer base"))
 
 (defparameter *itype-builtin*
-  (make-builtin
-    :fn #'set-itype
-    :coerce-args nil
-    :unwrap-args nil
-    :eval-args nil
+  (make-builtin :fn #'set-itype :coerce nil :unwrap nil :eval nil
     :help "set default number type (float, int, u#, i#)"))
 
 (defparameter *help-builtin*
-  (make-builtin
-    :fn #'show-help
-    :coerce-args nil
-    :unwrap-args nil
-    :eval-args nil
+  (make-builtin :fn #'show-help :coerce nil :unwrap nil :eval nil
     :allow-call-with-no-args t
     :help "show this help"))
 
@@ -1067,19 +1056,27 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
     (cons #\+ (make-builtin :fn #'+ :help "add"))
     (cons #\- (make-builtin :fn #'- :help "subtract"))
     (cons #\* (make-builtin :fn #'* :help "multiply"))
-    (cons #\/ (make-builtin :fn #'divide-builtin
-                            :coerce-args t
-                            :unwrap-args nil
-                            :help "integer divide or float divide"))
+    (cons #\/ (make-builtin
+                :fn #'divide-builtin
+                :coerce t
+                :unwrap nil
+                :help "integer divide or float divide"))
     (cons "abs" (make-builtin :fn #'abs :help "absolute value"))
-    (cons "exp" (make-builtin :fn (always-float #'exp)
-                              :coerce-args nil
-                              :unwrap-args nil
-                              :help "e^x"))
-    (cons "log" (make-builtin :fn (always-float #'log)
-                              :coerce-args nil
-                              :unwrap-args nil
-                              :help "ln(x) or log(x, base)"))
+    (cons "exp" (make-builtin
+                  :fn (always-float #'exp)
+                  :coerce nil
+                  :unwrap nil
+                  :help "e^x"))
+    (cons "log" (make-builtin
+                  :fn (always-float #'log)
+                  :coerce nil
+                  :unwrap nil
+                  :help "ln(x) or log(x, base)"))
+    (cons "sqrt" (make-builtin
+                   :fn (always-float #'sqrt)
+                   :coerce nil
+                   :unwrap nil
+                   :help "square root"))
     (cons #\% (make-builtin :fn #'rem :help "remainder (C %)"))
     (cons "mod" (make-builtin :fn #'mod :help "euclidian modulus"))
     (cons #\^ (make-builtin :fn #'expt :help "exponent"))
@@ -1096,7 +1093,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
     (make-fix-builtin-assoc t 16)
     (make-fix-builtin-assoc t 32)
     (make-fix-builtin-assoc t 64)
-    (cons "float" (make-builtin :fn #'float-cast :coerce-args nil :unwrap-args nil :help "cast to float"))
+    (cons "float" (make-builtin :fn #'float-cast :coerce nil :unwrap nil :help "cast to float"))
     (cons "ibase" *ibase-builtin*)
     (cons "ib" *ibase-builtin*)
     (cons "obase" *obase-builtin*)
@@ -1105,12 +1102,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
     (cons "it" *itype-builtin*)
     (cons "help" *help-builtin*) ; TODO(liam) help broken
     (cons "h" *help-builtin*)
-    (cons "vars" (make-builtin
-                   :fn #'show-vars
-                   :coerce-args nil
-                   :unwrap-args nil
+    (cons "vars" (make-builtin :fn #'show-vars
+                   :coerce nil :unwrap nil :eval nil
                    :allow-call-with-no-args t
-                   :eval-args nil
                    :help "print all variables"))))
 
 #+nil
