@@ -945,27 +945,29 @@
 
 (defun set-itype (type-str &rest args)
   (declare (ignore args))
-  (let ((typ
-          (cond
-            ((string-equal type-str "float") (flt 0d0))
-            ((string-equal type-str "flt") (flt 0d0))
-            ((string-equal type-str "f") (flt 0d0))
-            ((string-equal type-str "i") (fix 0 t :b))
-            ((string-equal type-str "int") (fix 0 t :b))
-            ((string-equal type-str "big") (fix 0 t :b))
-            ((string-equal type-str "bigint") (fix 0 t :b))
-            (t
-              (fix 0
-                   (case (elt type-str 0)
-                     (#\i t)
-                     (#\I t)
-                     (#\u nil)
-                     (#\U nil)
-                     (otherwise t))
-                   (or
-                     (parse-integer (subseq type-str 1) :junk-allowed t)
-                     32))))))
-    (setf (settings-itype (session-settings *session*)) typ)))
+  (if *speculatively-evaling*
+    (fix 0 t :b)
+    (let ((typ
+            (cond
+              ((string-equal type-str "float") (flt 0d0))
+              ((string-equal type-str "flt") (flt 0d0))
+              ((string-equal type-str "f") (flt 0d0))
+              ((string-equal type-str "i") (fix 0 t :b))
+              ((string-equal type-str "int") (fix 0 t :b))
+              ((string-equal type-str "big") (fix 0 t :b))
+              ((string-equal type-str "bigint") (fix 0 t :b))
+              (t
+                (fix 0
+                     (case (elt type-str 0)
+                       (#\i t)
+                       (#\I t)
+                       (#\u nil)
+                       (#\U nil)
+                       (otherwise t))
+                     (or
+                       (parse-integer (subseq type-str 1) :junk-allowed t)
+                       32))))))
+      (setf (settings-itype (session-settings *session*)) typ))))
 
 
 (defun show-help (&rest args)
@@ -990,7 +992,10 @@
 
 (defparameter *ibase-builtin*
   (make-builtin
-    :fn (lambda (base) (setf (settings-ibase (session-settings *session*)) base))
+    :fn (lambda (base &rest args)
+          (declare (ignore args))
+          (if *speculatively-evaling* 0
+            (setf (settings-ibase (session-settings *session*)) base)))
     :coerce-args nil
     :unwrap-args t
     :eval-args t
@@ -998,7 +1003,10 @@
 
 (defparameter *obase-builtin*
   (make-builtin
-    :fn (lambda (base) (setf (settings-obase (session-settings *session*)) base))
+    :fn (lambda (base &rest args)
+          (declare (ignore args))
+          (if *speculatively-evaling* 0
+            (setf (settings-obase (session-settings *session*)) base)))
     :coerce-args nil
     :unwrap-args t
     :eval-args t
