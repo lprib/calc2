@@ -818,7 +818,7 @@
 (defparameter *egexpr* (second (multiple-value-list (parse (expr) "69+420"))))
 
 #+nil
-(eval-expr (second (multiple-value-list (parse (expr) "2+3"))))
+(eval-expr (second (multiple-value-list (parse (expr) "8+3"))))
 
 ; TODO(liam) can we add another :ok-noreturn or something for things which
 ; don't have a value? eg fn defs
@@ -833,7 +833,13 @@
     (etypecase left
       (number (cons :ok (eval-literal-atom node)))
       (list (eval-fn node))
-      (string (cons :fail (format nil "unknown var ~a" left))))))
+      (string (eval-variable left)))))
+
+(defun eval-variable (varname)
+  (let ((val (assoc varname (session-vars *session*) :test #'string-equal)))
+    (if val
+        (cons :ok (cdr val))
+        (cons :fail (format nil "unknown variable ~a" (string-upcase varname))))))
 
 (defun quote-expr (expr)
   "Strip away source mappings, but do not eval. Converts sourcemapped single
@@ -843,32 +849,40 @@
       (list (error "nested quoted args not supported"))
       (t (car expr)))))
 
-(defun eval-string (str)
-  "Parse string and evaluate. returns (code . result)"
-  (multiple-value-bind (endi res) (parse (expr) str)
-    (case res
-      (:fail (cons :fail "parse error"))
-      (otherwise (if (= endi (length str))
-                     (eval-expr res)
-                     (cons :fail (format nil "unexpected char ~c (at ~d)" (elt str endi) endi)))))))
-
-#+nil
-(eval-string "2.0+1")
-
-; TODO(liam) replace values of eval-expr with eval-ast-top
 (defun eval-ast-top (form)
   (case (car form)
     (:expr (eval-expr (cdr form)))
     (:assign (assign-variable (caadr form) (caddr form)))))
 
-; TODO(liam) needs to set value in session alist
 (defun assign-variable (varname expr)
-  (format t "~a ~a~%"
-          varname
-          (eval-expr expr)))
+  (let ((eval-res (eval-expr expr)))
+    (when (eq (car eval-res) :ok)
+      (let ((val (cdr eval-res))
+            (pair (assoc varname (session-vars *session*) :test #'string-equal)))
+        (if pair
+            (setf (cdr pair) val)
+            (push (cons varname val) (session-vars *session*)))))
+    eval-res))
 
 #+nil
-(eval-ast-top (second (multiple-value-list (parse (ast-top) "a=2+2"))))
+(eval-ast-top (second (multiple-value-list (parse (ast-top) "a=809"))))
+#+nil
+(eval-ast-top (second (multiple-value-list (parse (ast-top) "b=4+5"))))
+
+(defun eval-toplevel-string (str)
+  "Parse string and evaluate. returns (code . result)"
+  (multiple-value-bind (endi res) (parse (ast-top) str)
+    (case res
+      (:fail (cons :fail "parse error"))
+      (otherwise (if (= endi (length str))
+                     (eval-ast-top res)
+                     (cons :fail
+                           (format nil "unexpected char ~c (at ~d)"
+                                   (elt str endi)
+                                   endi)))))))
+
+#+nil
+(eval-toplevel-string "2.0+1")
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; BUILT-IN FUNCTIONS
@@ -919,7 +933,8 @@
     (declare (ignore rem))
     (same-type-new-value num res)))
 
-(defun set-itype (type-str)
+(defun set-itype (type-str &rest args)
+  (declare (ignore args))
   (let ((typ
           (cond
             ((string-equal type-str "float") (flt 0d0))
@@ -952,6 +967,19 @@
       (loop :for b :in *builtins*
             :do (show-a-help b)))
     (fix 0 t :b)))
+
+(defun show-vars (&rest args)
+  (declare (ignore args))
+  (unless *speculatively-evaling*
+    (loop :for var-entry :in (session-vars *session*) :do
+          (format t "~a = ~a (~a)~%"
+                  (car var-entry)
+                  (value-string (cdr var-entry))
+                  (typename (cdr var-entry)))))
+  (fix 0 t :b))
+
+;(eval-ast-top (second (multiple-value-list (parse (ast-top) "b=4+5"))))
+;(show-vars)
 
 (defparameter *ibase-builtin*
   (make-builtin
@@ -1017,21 +1045,26 @@
     (cons "ob" *obase-builtin*)
     (cons "itype" *itype-builtin*)
     (cons "it" *itype-builtin*)
-    (cons "help" *help-builtin*)
-    (cons "h" *help-builtin*)))
+    (cons "help" *help-builtin*) ; TODO(liam) help broken
+    (cons "h" *help-builtin*)
+    (cons "vars" (make-builtin
+                   :fn #'show-vars
+                   :coerce-args nil
+                   :unwrap-args nil
+                   :help "print all variables"))))
 
 #+nil
-(eval-string "xor(u8(0x0f), u8(0xaa))")
+(eval-toplevel-string "xor(u8(0x0f), u8(0xaa))")
 #+nil
-(eval-string "u8(15)")
+(eval-toplevel-string "u8(15)")
 #+nil
-(eval-string "16.0/")
+(eval-toplevel-string "16.0/")
 #+nil
-(eval-string "3+a")
+(eval-toplevel-string "3+a")
 #+nil
-(eval-string "test(hello)")
+(eval-toplevel-string "test(hello)")
 #+nil
-(eval-string "u8(256)+33")
+(eval-toplevel-string "u8(256)+33")
 #+nil
 (pretty-print-parse-tree
   (second
@@ -1059,7 +1092,7 @@
                    (push (with-output-to-string (strm) (princ cnd strm))
                          warnings)
                    (muffle-warning cnd))))
-      (let* ((res (eval-string str))
+      (let* ((res (eval-toplevel-string str))
              (status (car res))
              (value (cdr res)))
         (values
