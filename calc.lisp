@@ -903,9 +903,42 @@
 (defun show-help (&rest args)
   (declare (ignore args))
   (unless *speculatively-evaling*
+    (format t "~%") ; Reset column align because terminal escapes mess it up
     (loop :for b :in *builtins*
           :do (show-a-help b)))
   (fix 0 t :b))
+
+(defparameter *ibase-builtin*
+  (make-builtin
+    :fn (lambda (base) (setf (settings-ibase (session-settings *session*)) base))
+    :coerce-args nil
+    :unwrap-args t
+    :eval-args t
+    :help "set default parsed integer base"))
+
+(defparameter *obase-builtin*
+  (make-builtin
+    :fn (lambda (base) (setf (settings-obase (session-settings *session*)) base))
+    :coerce-args nil
+    :unwrap-args t
+    :eval-args t
+    :help "set printed integer base"))
+
+(defparameter *itype-builtin*
+  (make-builtin
+    :fn #'set-itype
+    :coerce-args nil
+    :unwrap-args nil
+    :eval-args nil
+    :help "set default number type (float, int, u#, i#)"))
+
+(defparameter *help-builtin*
+  (make-builtin
+    :fn #'show-help
+    :coerce-args nil
+    :unwrap-args nil
+    :eval-args nil
+    :help "show this help"))
 
 (defparameter *builtins*
   (list
@@ -933,32 +966,14 @@
     (cons "xor" (make-builtin :fn #'logxor :help "bitwise xor"))
     (cons ">>" (make-builtin :fn (lambda (a b) (ash a (- b))) :help "arithmatic right shift"))
     (cons "<<" (make-builtin :fn #'ash :help "arithmatic left shift"))
-    (cons "ibase" (make-builtin
-                    :fn (lambda (base)
-                          (setf (settings-ibase (session-settings *session*)) base))
-                    :coerce-args nil
-                    :unwrap-args t
-                    :eval-args t
-                    :help "set default parsed integer base"))
-    (cons "obase" (make-builtin
-                    :fn (lambda (base)
-                          (setf (settings-obase (session-settings *session*)) base))
-                    :coerce-args nil
-                    :unwrap-args t
-                    :eval-args t
-                    :help "set printed integer base"))
-    (cons "itype" (make-builtin
-                    :fn #'set-itype
-                    :coerce-args nil
-                    :unwrap-args nil
-                    :eval-args nil
-                    :help "set default number type (float, int, u#, i#)"))
-    (cons "help" (make-builtin
-                   :fn #'show-help
-                   :coerce-args nil
-                   :unwrap-args nil
-                   :eval-args nil
-                   :help "show this help"))))
+    (cons "ibase" *ibase-builtin*)
+    (cons "ib" *ibase-builtin*)
+    (cons "obase" *obase-builtin*)
+    (cons "ob" *obase-builtin*)
+    (cons "itype" *itype-builtin*)
+    (cons "it" *itype-builtin*)
+    (cons "help" *help-builtin*)
+    (cons "h" *help-builtin*)))
 
 
 #+nil
@@ -1192,4 +1207,4 @@
       ((string-equal basename "ccalc") (simple-repl-main))
       ((string-equal basename "fcalc") (fancy-repl-main)))))
 
-(fancy-repl-main)
+;(fancy-repl-main)
