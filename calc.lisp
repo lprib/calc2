@@ -996,7 +996,7 @@
           (typename (settings-itype (session-settings *session*)))))
 
 (defun eval-to-displayable (str)
-  "parse and eval str. return (values displayable-result warnings), where
+  "parse and eval str. return (values result-val displayable-result warnings), where
   warnings is a list of warning strings returned during eval"
   (let ((warnings (list)))
     (handler-bind
@@ -1008,6 +1008,7 @@
              (status (car res))
              (value (cdr res)))
         (values
+          value
           (case status
             (:ok (format nil "~a (~a)" (value-string value) (typename value)))
             (:fail (if (plusp (length str)) value "")))
@@ -1024,27 +1025,36 @@
           i
           #\escape))
 
-(defun display-bitfield (val)
-  "display bitfield with terminal escapes"
-  (let ((n (inner val)))
-    (loop :for i :from (1- (bitwidth val)) :downto 0
+(defun display-bitfield (val &optional (min-height 4))
+  "display bitfield with terminal escapes, occupying min-height rows"
+  ; Pad to min-height
+  (let* ((bitwidth (bitwidth val))
+         (effective-bitwidth (case bitwidth (:big 64) (otherwise bitwidth)))
+         (n (inner val)))
+    (loop :for i :from 0 :below (max 0 (- min-height (ceiling effective-bitwidth 16))) :do
+          (term-clear-line)
+          (format t "~%"))
+    (term-clear-line)
+    (loop :for i :from (1- effective-bitwidth) :downto 0
           :do (display-bit i (plusp (ldb (byte 1 i) n)))
           :when (zerop (mod i 8))
             :do (format t "  ")
           :when (zerop (mod i 16))
-            :do (format t "~%"))))
+            :do
+              (format t "~%")
+              (term-clear-line))))
 
 #+nil
 (display-bitfield (fix 983745 t 32))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; FANCY REPL
+
 ; CSI n A   CUU   Cursor Up
 ; CSI n B   CUD   Cursor Down
 ; CSI n K   EL    Erase in Line (n=0 cursor to end, n=1 cursor to start, n=2 whole line)
 
 ;;;; GNU READLINE BINDINGS ;;;;
-
 ; extern void add_history (const char *);
 (sb-alien:define-alien-routine add-history sb-alien:void (line sb-alien:c-string))
 ; extern char *readline (const char *);
@@ -1071,7 +1081,17 @@
 #+nil
 (eval-to-displayable "u8(255)+u8(1)")
 
-(defconstant +heads-up-display-lines+ 2)
+(defparameter *bitfield-value* (fix 0 t :b))
+
+(defun update-bitfield-value (result-val)
+  (etypecase result-val
+    (fix (setf *bitfield-value* result-val))
+    ;; reset if flow
+    (flt (setf *bitfield-value* (fix 0 t :b)))
+    ; keep old value if nil
+    (t)))
+
+(defconstant +heads-up-display-lines+ 5)
 
 (defun term-cursor-up (n-lines &optional (strm t))
   (format strm "~c[~dA~C" #\escape n-lines #\return))
@@ -1082,7 +1102,9 @@
 ; MUST update +heads-up-display-lines+ to match number of lines printed
 (defun print-heads-up-display ()
   (let ((*speculatively-evaling* t))
-    (multiple-value-bind (result-display warnings) (eval-to-displayable rl-line-buffer)
+    (multiple-value-bind (result-val result-display warnings) (eval-to-displayable rl-line-buffer)
+      (update-bitfield-value result-val)
+      (display-bitfield *bitfield-value*)
       (term-clear-line)
       (format t  " ~c[30;106m= ~a~c[0m ~c[1;93m~a~c[22;90m[~a]~c[0m~%"
               #\escape
@@ -1092,9 +1114,7 @@
               (if  warnings "[WARN] " "")
               #\escape
               (settings-displayable)
-              #\escape)
-      (term-clear-line)
-      (format t "another line~%"))))
+              #\escape))))
 
 (sb-alien:define-alien-callable realtime-status-callback sb-alien:void ()
   (term-save-cursor)
@@ -1105,7 +1125,8 @@
   (rl-redisplay))
 
 (defun eval-and-print-line-fancy (line)
-  (multiple-value-bind (result-display warnings) (eval-to-displayable line)
+  (multiple-value-bind (result-val result-display warnings) (eval-to-displayable line)
+    (update-bitfield-value result-val)
     ; Clear previous heads-up
     (loop :for i :from 0 :below (1+ +heads-up-display-lines+) :do
           (term-cursor-up 1)
@@ -1129,7 +1150,9 @@
   (setf rl-redisplay-function
         (sb-alien:alien-sap
           (sb-alien:alien-callable-function 'realtime-status-callback)))
-  (format t "~%") ; initial newline for status
+  ; Clear space for heads-up-display
+  (loop :for i :from 0 :below +heads-up-display-lines+ :do
+    (format t "~%"))
   (loop
     (let ((line (readline *fancy-prompt*)))
       (cond
@@ -1139,26 +1162,26 @@
         (t (eval-and-print-line-fancy line))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-; CLASSIC REPL
+; SIMPLE REPL
 
 (defun eval-and-print-line (line)
-  (multiple-value-bind (display warns) (eval-to-displayable line)
+  (multiple-value-bind (result-val display warns) (eval-to-displayable line)
+    (declare (ignore result-val))
     (format t "  = ~a~%" display)
     (loop :for w :in warns
           :do (format t "warning: ~a~%" w))))
 
-(defun classic-repl-main ()
+(defun simple-repl-main ()
   (loop
     (format t "calc> ")
     (finish-output *standard-output*)
     (multiple-value-bind (line eof) (read-line *standard-input* nil)
       (when eof
-        (return-from classic-repl-main))
+        (return-from simple-repl-main))
       (let ((line (string-trim '(#\space #\tab #\linefeed #\return) line)))
         (cond
           ((zerop (length line)))
           (t (eval-and-print-line line)))))))
-
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; MAIN
@@ -1166,7 +1189,7 @@
 (defun main ()
   (let ((basename (pathname-name (pathname (first sb-ext:*posix-argv*)))))
     (cond
-      ((string-equal basename "ccalc") (classic-repl-main))
+      ((string-equal basename "ccalc") (simple-repl-main))
       ((string-equal basename "fcalc") (fancy-repl-main)))))
 
 (fancy-repl-main)
