@@ -223,23 +223,20 @@
 (defparameter *si-prefix-chars*
   (coerce (mapcar #'car *si-prefixes*) 'string))
 
-(defun to-fraction-digits (n)
-  "Convert integer to equivalent fraction digits e.g. 123 -> 0.123"
-  (if (zerop n)
-      0
-      (/ n (expt 10 (1+ (floor (log n 10)))))))
-
 (defun si-shorthand ()
   "purposely only recognizes infix si prefixes (eg 10k2), and not postfix 12k.
   Postfix should be handled higher up the parse tree to accomodate floats like
   1.2k TODO(liam) implement"
-  (map-res
-    (seq (natural-fast :radix 10) (charset *si-prefix-chars*) (natural-fast :radix 10))
-    (lambda (res)
-      (destructuring-bind (natural si fractional) res
-        (*
-          (+ natural (to-fraction-digits fractional))
-          (cdr (assoc si *si-prefixes*)))))))
+  (flet ((to-fraction-digits (n)
+           "Convert integer to equivalent fraction digits e.g. 123 -> 0.123"
+           (if (zerop n) 0 (/ n (expt 10 (1+ (floor (log n 10))))))))
+    (map-res
+      (seq (natural-fast :radix 10) (charset *si-prefix-chars*) (natural-fast :radix 10))
+      (lambda (res)
+        (destructuring-bind (natural si fractional) res
+          (*
+            (+ natural (to-fraction-digits fractional))
+            (cdr (assoc si *si-prefixes*))))))))
 
 #+nil
 (parse (si-shorthand) "1k2")
@@ -530,10 +527,6 @@
 (check-and-correct-overflow
   (make-instance 'fix :inner -129 :signed t :bitwidth 8) "")
 
-(defun max-bitwidth (a b)
-  (if (or (eq a :big) (eq b :big))
-      :big
-      (max a b)))
 
 (defgeneric unify-types (a b)
   (:documentation
@@ -550,14 +543,16 @@
 (defmethod unify-types ((a flt) (b flt))
   (values a b))
 (defmethod unify-types ((a fix) (b fix))
-  (let ((max-bw (max-bitwidth (bitwidth a) (bitwidth b)))
-        (either-signed (or (signed-p a) (signed-p b))))
-    (let* ((a (fix (inner a) either-signed max-bw))
-           (b (fix (inner b) either-signed max-bw))
-           (context (format nil "when coercing to ~a" (typename a))))
-      (check-and-correct-overflow a context)
-      (check-and-correct-overflow b context)
-      (values a b))))
+  (flet
+      ((max-bitwidth (a b) (if (or (eq a :big) (eq b :big)) :big (max a b))))
+    (let ((max-bw (max-bitwidth (bitwidth a) (bitwidth b)))
+          (either-signed (or (signed-p a) (signed-p b))))
+      (let* ((a (fix (inner a) either-signed max-bw))
+             (b (fix (inner b) either-signed max-bw))
+             (context (format nil "when coercing to ~a" (typename a))))
+        (check-and-correct-overflow a context)
+        (check-and-correct-overflow b context)
+        (values a b)))))
 
 #+nil
 (multiple-value-list
@@ -904,16 +899,16 @@
                      32))))))
     (setf (settings-itype (session-settings *session*)) typ)))
 
-(defun show-a-help (builtin-assoc)
-  (format t "~a~20t- ~a~%" (car builtin-assoc) (builtin-help (cdr builtin-assoc))))
 
 (defun show-help (&rest args)
   (declare (ignore args))
-  (unless *speculatively-evaling*
-    (format t "~%") ; Reset column align because terminal escapes mess it up
-    (loop :for b :in *builtins*
-          :do (show-a-help b)))
-  (fix 0 t :b))
+  (flet ((show-a-help (builtin-assoc)
+           (format t "~a~20t- ~a~%" (car builtin-assoc) (builtin-help (cdr builtin-assoc)))))
+    (unless *speculatively-evaling*
+      (format t "~%") ; Reset column align because terminal escapes mess it up
+      (loop :for b :in *builtins*
+            :do (show-a-help b)))
+    (fix 0 t :b)))
 
 (defparameter *ibase-builtin*
   (make-builtin
@@ -1005,10 +1000,6 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; HUMAN OUTPUT
-
-(defun display-eval-result (value)
-  "format a class val for the user"
-  (format nil "~a (~a)" (value-string value) (typename value)))
 
 (defun settings-displayable ()
   "format session settings for the user"
