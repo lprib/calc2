@@ -196,7 +196,7 @@
 #+nil
 (let ((*session*
         (make-instance 'session
-                       :settings (make-instance 'settings :ibase 16 :obase 10 :itype nil))))
+                       :settings (make-instance 'settings :ibase 16))))
   (parse (default-int) "ff"))
 
 (defun prefixed-radix (prefix radix)
@@ -375,7 +375,6 @@
      (loop :for arg :in (cdr tree) :do (pretty-print-parse-tree arg (1+ indent))))
    (t
      (format t "~v@t~a~%" (* indent 3) (car tree)))))
-
 
 #+nil
 (pretty-print-parse-tree (second (multiple-value-list (parse (expr) "1+2"))))
@@ -560,7 +559,6 @@
       (check-and-correct-overflow b context)
       (values a b))))
 
-
 #+nil
 (multiple-value-list
   (unify-types
@@ -605,9 +603,9 @@
 ; SESSION MANAGEMENT
 
 (defclass settings ()
-  ((ibase :initarg :ibase :initform (error "required") :accessor settings-ibase)
-   (obase :initarg :obase :initform (error "required") :accessor settings-obase)
-   (itype :initarg :itype :initform (error "required") :accessor settings-itype)))
+  ((ibase :initarg :ibase :initform 10 :accessor settings-ibase)
+   (obase :initarg :obase :initform 10 :accessor settings-obase)
+   (itype :initarg :itype :initform (fix 0 t :b) :accessor settings-itype)))
 
 (defmethod to-readable-form ((s settings))
   (list
@@ -636,68 +634,78 @@
   ((expr :initarg :expr :initform (error "required") :accessor history-entry-expr)
    (settings :initarg :settings :initform (error "required") :accessor history-entry-settings)
    (state :initarg :state :initform (error "required") :accessor history-entry-state)
-   (result :initarg :result :initform (error "required") :accessor history-entry-result)
-   (notes :initarg :notes :initform nil :accessor history-entry-notes)))
+   (result :initarg :result :initform (error "required") :accessor history-entry-result)))
 
 (defmethod to-readable-form ((h history-entry))
   (list :expr (history-entry-expr h)
         :settings (to-readable-form (history-entry-settings h))
         :state (history-entry-state h)
-        :result (to-readable-form (history-entry-result h))
-        :notes (history-entry-notes h)))
+        :result (to-readable-form (history-entry-result h))))
 
 (defun read-history-entry (form)
   (make-instance 'history-entry
                  :expr (getf form :expr)
                  :settings (read-settings (getf form :settings))
                  :state (getf form :state)
-                 :result (getf form :result)
-                 :notes (getf form :notes)))
+                 :result (getf form :result)))
 
 #+nil
 (to-readable-form
   (make-instance
     'history-entry
     :expr "1+2"
-    :settings (make-instance 'settings :ibase 10 :obase 10 :itype (fix 0 t 32))
+    :settings (make-instance 'settings)
     :state :ok
     :result (fix 3 t 32)))
 
 (defclass session ()
   ((history :initarg :history :initform (list) :accessor session-history)
-   (settings :initarg :settings :initform (error "required") :accessor session-settings)))
+   (settings :initarg :settings :initform (error "required") :accessor session-settings)
+   (vars :initarg :vars :initform (list) :accessor session-vars)))
 
+(defun var-assoc-to-readable-form (var-assoc)
+  (cons (car var-assoc) (to-readable-form (cdr var-assoc))))
+
+(defun read-var-assoc (form)
+  (cons (car form) (read-val (cdr form))))
 
 (defmethod to-readable-form ((s session))
   (list
     :settings
     (to-readable-form (session-settings s))
-    :history
-    (mapcar #'to-readable-form (session-history s))))
+    :history (mapcar #'to-readable-form (session-history s))
+    :vars (mapcar #'var-assoc-to-readable-form (session-vars s))))
+
+#+nil
+(read-session
+  (to-readable-form
+    (make-instance
+      'session
+      :settings (make-instance 'settings)
+      :vars (list
+              (cons "a" (fix 123 t :b))
+              (cons "b" (flt 99d0))))))
 
 (defun read-session (form)
-  (make-instance 'session
-                 :history (mapcar #'read-history-entry (getf form :history))
-                 :settings (read-settings (getf form :settings))))
+  (make-instance
+    'session
+    :history (mapcar #'read-history-entry (getf form :history))
+    :settings (read-settings (getf form :settings))
+    :vars (mapcar #'read-var-assoc (getf form :vars))))
 
 (defparameter *session*
   (make-instance
     'session
-    :settings (make-instance
-                'settings
-                :ibase 10
-                :obase 10
-                :itype (fix 0 t :big))))
+    :settings (make-instance 'settings)))
 
-(defun commit-result (input result-cons notes)
+(defun commit-result (input result-cons)
   "result-cons, mentioned below, is (cons code result) where code can be :fail or
   :result"
   (push (make-instance 'history-entry
                        :expr input
                        :settings (copy-of (session-settings *session*))
                        :state (car result-cons)
-                       :result (cdr result-cons)
-                       :notes notes)
+                       :result (cdr result-cons))
         (session-history *session*)))
 
 #+nil
@@ -705,7 +713,6 @@
 
 #+nil
 (format t (write-to-string (to-readable-form *session*) :pretty t :readably t :miser-width nil :right-margin nil :case :downcase))
-
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; EVALUATOR
@@ -975,7 +982,6 @@
     (cons "help" *help-builtin*)
     (cons "h" *help-builtin*)))
 
-
 #+nil
 (eval-string "xor(u8(0x0f), u8(0xaa))")
 #+nil
@@ -1160,6 +1166,8 @@
 (defun fancy-repl-main ()
   (unless (load-libs)
     (format t "Unable to load libreadline.so and libhistory.so~%")
+    (format t "Falling back to simple REPL~%")
+    (simple-repl-main)
     (return-from fancy-repl-main))
 
   (setf rl-redisplay-function
