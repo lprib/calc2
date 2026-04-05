@@ -377,9 +377,6 @@
         (declare (ignore eql-sign))
         (list :assign var expr)))))
 
-#+nil
-(parse (var-assignment) "a = 4*5")
-
 (defun pretty-print-parse-tree (tree &optional (indent 0))
  (etypecase (car tree)
    (list
@@ -416,15 +413,15 @@
 
 ; TODO(liam) move all parse routings to this. returns (:operation rest)
 ; Should only return expr if :expr. If :assign, assign the variable
-(defun top ()
+(defun ast-top ()
   (alt
     (var-assignment)
     (map-res (expr) (lambda (res) (cons :expr res)))))
 
 #+nil
-(parse (top) "1+1")
+(parse (ast-top) "1+1")
 #+nil
-(parse (top) "a=1+1")
+(parse (ast-top) "a=1+1")
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; VALUE/TYPE SYSTEM
@@ -786,7 +783,7 @@
          ; :fail results. If there are, return (:fail . info) from that arg up
          ; the call stack
          (args (if (builtin-eval-args builtin)
-                   (let* ((try-args (mapcar #'eval-ast-node (cdr fn-expr)))
+                   (let* ((try-args (mapcar #'eval-expr (cdr fn-expr)))
                           (first-error (find-if (lambda (a) (eq :fail (car a))) try-args)))
                      (when first-error
                        (return-from eval-fn first-error))
@@ -821,13 +818,17 @@
 (defparameter *egexpr* (second (multiple-value-list (parse (expr) "69+420"))))
 
 #+nil
-(eval-ast-node (second (multiple-value-list (parse (expr) "2+3"))))
+(eval-expr (second (multiple-value-list (parse (expr) "2+3"))))
 
-(defun eval-ast-node (node)
+; TODO(liam) can we add another :ok-noreturn or something for things which
+; don't have a value? eg fn defs
+(defun eval-expr (node)
   "Eval node, where node can be
   1. number literal (99 start . end)
   2. function application ((fn start . end) (arg1 start . end) ...)
-  3. variable (varname start . end)"
+  3. variable (varname start . end)
+
+  returns (code . result)"
   (let ((left (car node)))
     (etypecase left
       (number (cons :ok (eval-literal-atom node)))
@@ -848,11 +849,26 @@
     (case res
       (:fail (cons :fail "parse error"))
       (otherwise (if (= endi (length str))
-                     (eval-ast-node res)
+                     (eval-expr res)
                      (cons :fail (format nil "unexpected char ~c (at ~d)" (elt str endi) endi)))))))
 
 #+nil
 (eval-string "2.0+1")
+
+; TODO(liam) replace values of eval-expr with eval-ast-top
+(defun eval-ast-top (form)
+  (case (car form)
+    (:expr (eval-expr (cdr form)))
+    (:assign (assign-variable (caadr form) (caddr form)))))
+
+; TODO(liam) needs to set value in session alist
+(defun assign-variable (varname expr)
+  (format t "~a ~a~%"
+          varname
+          (eval-expr expr)))
+
+#+nil
+(eval-ast-top (second (multiple-value-list (parse (ast-top) "a=2+2"))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; BUILT-IN FUNCTIONS
