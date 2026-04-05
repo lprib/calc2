@@ -1039,9 +1039,9 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; FANCY REPL
-; CSI n A   CUU   Cursor Up 
-; CSI n B   CUD   Cursor Down 
-; CSI n K 	EL 	Erase in Line (n=0 cursor to end, n=1 cursor to start, n=2 whole line)
+; CSI n A   CUU   Cursor Up
+; CSI n B   CUD   Cursor Down
+; CSI n K   EL    Erase in Line (n=0 cursor to end, n=1 cursor to start, n=2 whole line)
 
 ;;;; GNU READLINE BINDINGS ;;;;
 
@@ -1071,47 +1071,55 @@
 #+nil
 (eval-to-displayable "u8(255)+u8(1)")
 
-; TODO(liam) need to sort out realtime display of bitfield with dynamic height
-(sb-alien:define-alien-callable realtime-status-callback sb-alien:void ()
+(defconstant +heads-up-display-lines+ 2)
+
+(defun term-cursor-up (n-lines &optional (strm t))
+  (format strm "~c[~dA~C" #\escape n-lines #\return))
+(defun term-clear-line (&optional (strm t)) (format strm "~c[2K" #\escape))
+(defun term-save-cursor (&optional (strm t)) (format strm "~c[s" #\escape))
+(defun term-restore-cursor (&optional (strm t)) (format strm "~c[u" #\escape))
+
+; MUST update +heads-up-display-lines+ to match number of lines printed
+(defun print-heads-up-display ()
   (let ((*speculatively-evaling* t))
-    (multiple-value-bind (display warns) (eval-to-displayable rl-line-buffer)
-      (let* ((settings (settings-displayable))
-             (status (format nil "~C[1;96m= ~a ~C[1;93m~a~C[22;90m[~a]~C[0m"
-                             #\escape
-                             display
-                             #\escape
-                             (if warns "[WARN]" "")
-                             #\escape
-                             settings
-                             #\escape)))
-        (format t "~C[s~C[1A~C~C[2K~A~C[u"
-            #\escape ; save cursor
-            #\escape ; up 1 line
-            #\return ; carriage return (col 0)
-            #\escape ; erase line
-            status ; status string
-            #\escape)))) ; restore cursor
+    (multiple-value-bind (result-display warnings) (eval-to-displayable rl-line-buffer)
+      (term-clear-line)
+      (format t  " ~c[30;106m= ~a~c[0m ~c[1;93m~a~c[22;90m[~a]~c[0m~%"
+              #\escape
+              result-display
+              #\escape
+              #\escape
+              (if  warnings "[WARN] " "")
+              #\escape
+              (settings-displayable)
+              #\escape)
+      (term-clear-line)
+      (format t "another line~%"))))
+
+(sb-alien:define-alien-callable realtime-status-callback sb-alien:void ()
+  (term-save-cursor)
+  (term-cursor-up +heads-up-display-lines+)
+  (print-heads-up-display)
+  (term-restore-cursor)
   (finish-output *standard-output*)
   (rl-redisplay))
 
 (defun eval-and-print-line-fancy (line)
-  (multiple-value-bind (display warns) (eval-to-displayable line)
-    ;(when warns
-      ;(format t "~%~%~%~%~%"))
-    ; TODO(liam): this overwrites the warning above. How can We maintain the
-    ; CLI and print arbitrary amount of lines?
-    (format t "~C[2A~C~C[2K~A~C~C[2K~A~%"
-            #\escape #\return #\escape
-            line
-            #\linefeed #\escape
-            (format nil "~C[32m  = ~a~C[0m" #\escape display #\escape))
-    (loop :for w :in warns
-          :do (format t "~C[93m~A~C[0m~%"
-                      #\escape
-                      w
-                      #\escape))
-    (format t "~%"))
-  (add-history line))
+  (multiple-value-bind (result-display warnings) (eval-to-displayable line)
+    ; Clear previous heads-up
+    (loop :for i :from 0 :below (1+ +heads-up-display-lines+) :do
+          (term-cursor-up 1)
+          (term-clear-line))
+    ; Print history line
+    (format t "~a~%" line)
+    ; Print result
+    (format t " ~c[30;42m= ~a~c[0m~%" #\escape result-display #\escape)
+    ; Print warnigns
+    (loop :for w :in warnings :do
+          (format t "~C[93m~A~C[0m~%" #\escape w #\escape))
+    ; Leave space for new heads-up
+    (loop :for i :from 0 :below +heads-up-display-lines+ :do (format t "~%"))
+    (add-history line)))
 
 (defun fancy-repl-main ()
   (unless (load-libs)
@@ -1161,3 +1169,4 @@
       ((string-equal basename "ccalc") (classic-repl-main))
       ((string-equal basename "fcalc") (fancy-repl-main)))))
 
+(fancy-repl-main)
