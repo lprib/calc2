@@ -744,6 +744,10 @@
   ; Evaluate args before passing to fn. If nil, verbatim parsed args (without
   ; srcmap) are passed. Must set coerce/unwrap to nil as well.
   (eval-args t)
+  ; If we see a "Variable" invocation with this fn name, call it. For stuff
+  ; like "help" which should be treated as a function, not a variable if it's
+  ; encountered on its own
+  (allow-call-with-no-args nil)
   ; helptext
   (help ""))
 
@@ -778,7 +782,7 @@
   "Evaluate function call. returns result-cons (status . result)"
   (let* ((fn-name (caar fn-expr))
          ; TODO(liam) handle function not found
-         (builtin (cdr (assoc fn-name *builtins* :test #'equal)))
+         (builtin (cdr (assoc fn-name *builtins* :test #'equalp)))
          ; Eval args if applicable. Eval all args first. Then seaerch for any
          ; :fail results. If there are, return (:fail . info) from that arg up
          ; the call stack
@@ -833,13 +837,19 @@
     (etypecase left
       (number (cons :ok (eval-literal-atom node)))
       (list (eval-fn node))
-      (string (eval-variable left)))))
+      (string (eval-variable node)))))
 
-(defun eval-variable (varname)
-  (let ((val (assoc varname (session-vars *session*) :test #'string-equal)))
+(defun eval-variable (node)
+  (let* ((varname (car node))
+         ; first, try look var in var alist
+         (val (assoc varname (session-vars *session*) :test #'string-equal)))
     (if val
         (cons :ok (cdr val))
-        (cons :fail (format nil "unknown variable ~a" (string-upcase varname))))))
+        ; second, try to treat the var as a function with no args
+        (let ((builtin (assoc varname *builtins* :test #'equalp)))
+          (if (and builtin (builtin-allow-call-with-no-args (cdr builtin)))
+              (eval-fn (list node)) ; Make a fn-call list with no args
+              (cons :fail (format nil "unknown variable ~a" (string-upcase varname))))))))
 
 (defun quote-expr (expr)
   "Strip away source mappings, but do not eval. Converts sourcemapped single
@@ -978,9 +988,6 @@
                   (typename (cdr var-entry)))))
   (fix 0 t :b))
 
-;(eval-ast-top (second (multiple-value-list (parse (ast-top) "b=4+5"))))
-;(show-vars)
-
 (defparameter *ibase-builtin*
   (make-builtin
     :fn (lambda (base) (setf (settings-ibase (session-settings *session*)) base))
@@ -1011,6 +1018,7 @@
     :coerce-args nil
     :unwrap-args nil
     :eval-args nil
+    :allow-call-with-no-args t
     :help "show this help"))
 
 (defparameter *builtins*
@@ -1051,6 +1059,8 @@
                    :fn #'show-vars
                    :coerce-args nil
                    :unwrap-args nil
+                   :allow-call-with-no-args t
+                   :eval-args nil
                    :help "print all variables"))))
 
 #+nil
