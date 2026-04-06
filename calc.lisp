@@ -22,8 +22,15 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 (defvar *session*)
 (defvar *builtins*)
 (defparameter *speculatively-evaling* nil)
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-; COMBINATORS
+; PARSER COMBINATORS
+;
+; "Parsers" have the form (lambda (i) (values i result)). Where `i` is an index
+; into the special variable *input*, a string.
+;
+; "Parser cominators" are higher order functions that take parameters (commonly
+; parser lambdas) and return a parser
 
 (defparameter *input* "")
 
@@ -206,6 +213,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; PARSER
+;
+; Now use the combinators to make a recursive descent parser of calculator
+; expressions, variables, and function definitions.
+;
+; Most syntax elements are "source-mapped" meaning their value is (inner-value
+; source-start-index . source-end-index)
 
 (defun default-int ()
   "default-int gets radix from current settings"
@@ -445,6 +458,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; VALUE/TYPE SYSTEM
+;
+; The type system is based on (class val). class flt are double-floats. class
+; fix are either fixed-width integers or arbitrary precision integers and can
+; be signed or unsigned.
 
 (defclass val ()
   ((inner
