@@ -1138,7 +1138,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                (val-display (format nil "~a (~a)" (value-string val) (typename val))))
           (values val val-display (nreverse warnings)))
         (calc-error (c)
-          (values nil (format nil "~a" c) nil))))))
+          (values nil (if (plusp (length str)) (format nil "~a" c) "") nil))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; BITFIELD
