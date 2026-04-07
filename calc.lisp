@@ -20,7 +20,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 (defvar *input*)
 (defvar *session*)
-(defvar *builtins*)
+(defvar *ops*)
 (defparameter *speculatively-evaling* nil)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -491,7 +491,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
      :initform (error "required")
      :accessor bitwidth)))
 
-(defun fix (n signed bitwidth)
+(defun fix (n &optional (signed t) (bitwidth :big))
   "Make fix num. accept :b or :big as bigint for compactness"
   (make-instance 'fix :inner n :signed signed
                  :bitwidth (case bitwidth (:b :big) (t bitwidth))))
@@ -663,7 +663,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 (defclass settings ()
   ((ibase :initarg :ibase :initform 10 :accessor settings-ibase)
    (obase :initarg :obase :initform 10 :accessor settings-obase)
-   (itype :initarg :itype :initform (fix 0 t :b) :accessor settings-itype)))
+   (itype :initarg :itype :initform (fix 0) :accessor settings-itype)))
 
 (defmethod to-readable-form ((s settings))
   (list
@@ -775,21 +775,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; EVALUATOR
 
-(defstruct builtin fn
-  ; Coerce args to the same type via promotion
-  (coerce t)
-  ; Only pass inner value of args to the fn, otherwise pass (class val)
-  (unwrap t)
-  ; Evaluate args before passing to fn. If nil, verbatim parsed args (without
-  ; srcmap) are passed. Must set coerce/unwrap to nil as well.
-  (eval t)
-  ; If we see a "Variable" invocation with this fn name, call it. For stuff
-  ; like "help" which should be treated as a function, not a variable if it's
-  ; encountered on its own
-  (allow-call-with-no-args nil)
-  ; helptext
-  (help ""))
-
 (defun eval-literal-atom (atom-expr)
   "Eval atom that is value literal (not expr or var). Returns class val ONLY,
   not result-cons"
@@ -820,40 +805,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 (defun eval-fn (fn-expr)
   "Evaluate function call. returns result-cons (status . result)"
   (let* ((fn-name (caar fn-expr))
-         (builtin (cdr (assoc fn-name *builtins* :test #'equalp))))
-    (unless builtin
-      (error 'calc-error :msg (format nil "unknown function ~a" (string-upcase fn-name))))
-    (let*
-        ; Eval args if applicable. Eval all args first. Then seaerch for any
-        ; :fail results. If there are, return (:fail . info) from that arg up
-        ; the call stack
-        ((args (if (builtin-eval builtin)
-                   (mapcar #'eval-expr (cdr fn-expr))
-                   (mapcar #'quote-expr (cdr fn-expr))))
-         ;coerce args if applicable
-         (coerced-args
-           (if (and (builtin-coerce builtin) (> (length args) 1))
-               (multiple-value-list (apply #'unify-types args))
-               args))
-         ; unwrap actual number out of class val if applicable
-         (maybe-unwrapped-args
-           (if (builtin-unwrap builtin)
-               (mapcar #'inner coerced-args)
-               coerced-args))
-         ; run fn
-         (result (apply (builtin-fn builtin) maybe-unwrapped-args))
-         ; rewrap back in class val if applicable
-         (wrapped-result
-           (if (builtin-unwrap builtin)
-               (same-type-new-value (first coerced-args) result)
-               result)))
-      ; If builtin takes quoted args, they will not be class val, dont check
-      ; overflow
-      (when (builtin-eval builtin)
-        (wrap-overflow
-          wrapped-result
-          (format nil "type ~a as part of ~a operation" (typename (first args)) fn-name)))
-      wrapped-result)))
+         (op (cdr (assoc fn-name *ops* :test #'equalp))))
+    (eval-op op (cdr fn-expr))))
 
 #+nil
 (defparameter *egatom* (second (multiple-value-list (parse (expr) "69"))))
@@ -881,9 +834,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
     (if val
         (cdr val)
         ; second, try to treat the var as a function with no args
-        (let ((builtin (assoc varname *builtins* :test #'equalp)))
-          (if (and builtin (builtin-allow-call-with-no-args (cdr builtin)))
-              (eval-fn (list node)) ; Make a fn-call list with no args
+        (let ((opcons (assoc varname *ops* :test #'equalp)))
+          (if (and opcons (member 0 (arities (cdr opcons))))
+              (eval-op (cdr opcons) (list)) ; Make a fn-call list with no args
               (error 'calc-error :msg (format nil "unknown variable ~a" (string-upcase varname))))))))
 
 (defun quote-expr (expr)
@@ -922,12 +875,66 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
             (eval-ast-top res)
             (error 'calc-error :msg (format nil "unexpected char ~c (at ~d)" (elt str endi) endi)))))))
 
-
 #+nil
 (eval-toplevel-string "2.0+1")
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-; BUILT-IN FUNCTIONS
+; BUILT-IN OPS
+
+(defclass op ()
+   ((fn :initarg :fn :initform (error "required") :reader fn)
+    (min-args :initarg :min-args :initform -1 :reader min-args)
+    (arities :initarg :arities :initform nil :reader arities
+             :documentation "arities the op accepts or nil for any")
+    (help :initarg :help :reader help)))
+
+(defun eval-op (o args)
+  (let ((prepared (prepare-args o args))) (apply-fn o prepared)))
+
+(defgeneric prepare-args (op args))
+(defmethod prepare-args :before ((o op) args)
+  (let ((arity (length args)))
+    (cond
+      ((< arity (min-args o))
+       (error 'calc-error (format nil "accepts minimum ~d args, got ~d" (min-args o) arity)))
+      ((and (arities o) (not (member arity (arities o))))
+       (error 'calc-error (format nil "accepts arities ~a, got ~d" (arities o) arity))))))
+
+(defmethod prepare-args ((o op) args) (mapcar #'quote-expr args))
+
+(defgeneric apply-fn (op args))
+(defmethod apply-fn ((o op) args) (apply (fn o) args))
+
+(defclass numeric-op (op) ())
+(defmethod prepare-args ((o numeric-op) args) (mapcar #'eval-expr args))
+
+(defclass coercing-op (numeric-op) ())
+(defmethod prepare-args ((o coercing-op) args)
+  (let ((args (call-next-method)))
+    (case (length args)
+      (2 (multiple-value-list (unify-types (first args) (second args))))
+      (otherwise args))))
+
+(defclass simple-op (coercing-op)())
+(defmethod apply-fn :around ((o simple-op) args)
+  (let ((unwrapped (mapcar #'inner args)))
+    (same-type-new-value (first args) (call-next-method o unwrapped))))
+
+(defclass simple-float-op (numeric-op) ())
+(defmethod apply-fn :around ((o simple-float-op) args)
+  (let ((unwrapped (mapcar #'inner args)))
+    (flt (call-next-method o unwrapped))))
+
+#+nil
+(eval-op (make-instance 'op
+                        :fn (lambda (&rest args) (format t "~a" args))
+              '((1 0 . 0) (2 0 . 0))))
+
+#+nil
+(eval-op (make-instance 'simple-float-op
+                        :fn (lambda (&rest args) (format t "~a" args) (apply #'+ args))
+              '((1 0 . 0) (2 0 . 0))))
+
 
 (defun bits-to-signed (n n-bits)
   "Convert a lisp bigint value to what it would be if interpreted as an n-bits
@@ -952,32 +959,31 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
         to-signed
         to-width))))
 
-(defun make-fix-builtin-assoc (to-signed to-width)
-  "Generate a struct builtin that casts values to (fix * to-signed to-width)"
+(defun make-fix-cast-op-entry (to-signed to-width)
+  "Generate a op that casts values to (fix * to-signed to-width)"
   (let ((name (format nil "~c~d" (if to-signed #\i #\u) to-width)))
-    (cons name (make-builtin
+    (cons name (make-instance 'numeric-op
                  :fn (make-fix-cast to-signed to-width)
-                 :coerce nil :unwrap nil
+                 :arities '(1)
                  :help (format nil "cast to ~a~d" (if to-signed #\i #\u) to-width)))))
 
 (defun float-cast (source)
   "Cast class val to float"
   (flt (inner source)))
 
-(defgeneric divide-builtin (num den)
+(defgeneric divide-fn (num den)
   (:documentation
    "Impl of / function. Must specialize for integer vs float division"))
-(defmethod divide-builtin ((num flt) (den flt))
+(defmethod divide-fn ((num flt) (den flt))
   (flt (/ (inner num) (inner den))))
-(defmethod divide-builtin ((num fix) (den fix))
+(defmethod divide-fn ((num fix) (den fix))
   (multiple-value-bind (res rem) (floor (inner num) (inner den))
     (declare (ignore rem))
     (same-type-new-value num res)))
 
-(defun set-itype (type-str &rest args)
-  (declare (ignore args))
+(defun set-itype (type-str)
   (if *speculatively-evaling*
-    (fix 0 t :b)
+    (fix 0)
     (let ((typ
             (cond
               ((string-equal type-str "float") (flt 0d0))
@@ -1003,12 +1009,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 (defun show-help (&rest args)
   (declare (ignore args))
-  (flet ((show-a-help (builtin-assoc)
-           (format t "~a~20t- ~a~%" (car builtin-assoc) (builtin-help (cdr builtin-assoc)))))
+  (flet ((show-a-help (opcons)
+           (format t "~a~20t- ~a~%" (car opcons) (help (cdr opcons)))))
     (unless *speculatively-evaling*
       (format t "~%") ; Reset column align because terminal escapes mess it up
-      (loop :for b :in *builtins*
-            :do (show-a-help b)))
+      (loop :for o :in *ops*
+            :do (show-a-help o)))
     (fix 0 t :b)))
 
 (defun show-vars (&rest args)
@@ -1021,95 +1027,74 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                   (typename (cdr var-entry)))))
   (fix 0 t :b))
 
-(defparameter *ibase-builtin*
-  (make-builtin
-    :fn (lambda (base &rest args)
-          (declare (ignore args))
-          (if *speculatively-evaling* 0
-            (setf (settings-ibase (session-settings *session*)) base)))
-    :coerce nil :unwrap t :eval t
+(defparameter *ibase-op*
+  (make-instance
+    'numeric-op
+    :arities '(1)
+    :fn (lambda (base)
+          (unless *speculatively-evaling*
+            (setf (settings-ibase (session-settings *session*)) (floor (inner base))))
+          (fix 0))
     :help "set default parsed integer base"))
 
-(defparameter *obase-builtin*
-  (make-builtin
-    :fn (lambda (base &rest args)
-          (declare (ignore args))
-          (if *speculatively-evaling* 0
-            (setf (settings-obase (session-settings *session*)) base)))
-    :coerce nil :unwrap t :eval t
+(defparameter *obase-op*
+  (make-instance
+    'numeric-op
+    :arities '(1)
+    :fn (lambda (base)
+          (unless *speculatively-evaling*
+            (setf (settings-obase (session-settings *session*)) (floor (inner base))))
+          (fix 0))
     :help "set printed integer base"))
 
-(defparameter *itype-builtin*
-  (make-builtin :fn #'set-itype :coerce nil :unwrap nil :eval nil
-    :help "set default number type (float, int, u#, i#)"))
+(defparameter *itype-op*
+  (make-instance 'op
+                 :arities '(1)
+                 :fn #'set-itype
+                 :help "set default number type (float, int, u#, i#)"))
 
-(defparameter *help-builtin*
-  (make-builtin :fn #'show-help :coerce nil :unwrap nil :eval nil
-    :allow-call-with-no-args t
-    :help "show this help"))
+(defparameter *help-op*
+  (make-instance 'op
+                 :arities '(0)
+                 :fn #'show-help
+                 :help "show this help"))
 
-(defun always-float (fn)
-  "given a primitive function, make a function on class val that always returns
-  a (flt) val"
-  (lambda (&rest args)
-    (let ((arg-inners (mapcar #'inner args)))
-      (flt (apply fn arg-inners)))))
-
-(defparameter *builtins*
+(defparameter *ops*
   (list
-    (cons #\+ (make-builtin :fn #'+ :help "add"))
-    (cons #\- (make-builtin :fn #'- :help "subtract"))
-    (cons #\* (make-builtin :fn #'* :help "multiply"))
-    (cons #\/ (make-builtin
-                :fn #'divide-builtin
-                :coerce t
-                :unwrap nil
-                :help "integer divide or float divide"))
-    (cons "abs" (make-builtin :fn #'abs :help "absolute value"))
-    (cons "exp" (make-builtin
-                  :fn (always-float #'exp)
-                  :coerce nil
-                  :unwrap nil
-                  :help "e^x"))
-    (cons "log" (make-builtin
-                  :fn (always-float #'log)
-                  :coerce nil
-                  :unwrap nil
-                  :help "ln(x) or log(x, base)"))
-    (cons "sqrt" (make-builtin
-                   :fn (always-float #'sqrt)
-                   :coerce nil
-                   :unwrap nil
-                   :help "square root"))
-    (cons #\% (make-builtin :fn #'rem :help "remainder (C %)"))
-    (cons "mod" (make-builtin :fn #'mod :help "euclidian modulus"))
-    (cons #\^ (make-builtin :fn #'expt :help "exponent"))
-    (cons #\& (make-builtin :fn #'logand :help "bitwise and"))
-    (cons #\| (make-builtin :fn #'logior :help "bitwise or"))
-    (cons "xor" (make-builtin :fn #'logxor :help "bitwise xor"))
-    (cons ">>" (make-builtin :fn (lambda (a b) (ash a (- b))) :help "arithmatic right shift"))
-    (cons "<<" (make-builtin :fn #'ash :help "arithmatic left shift"))
-    (make-fix-builtin-assoc nil 8)
-    (make-fix-builtin-assoc nil 16)
-    (make-fix-builtin-assoc nil 32)
-    (make-fix-builtin-assoc nil 64)
-    (make-fix-builtin-assoc t 8)
-    (make-fix-builtin-assoc t 16)
-    (make-fix-builtin-assoc t 32)
-    (make-fix-builtin-assoc t 64)
-    (cons "float" (make-builtin :fn #'float-cast :coerce nil :unwrap nil :help "cast to float"))
-    (cons "ibase" *ibase-builtin*)
-    (cons "ib" *ibase-builtin*)
-    (cons "obase" *obase-builtin*)
-    (cons "ob" *obase-builtin*)
-    (cons "itype" *itype-builtin*)
-    (cons "it" *itype-builtin*)
-    (cons "help" *help-builtin*) ; TODO(liam) help broken
-    (cons "h" *help-builtin*)
-    (cons "vars" (make-builtin :fn #'show-vars
-                   :coerce nil :unwrap nil :eval nil
-                   :allow-call-with-no-args t
-                   :help "print all variables"))))
+    (cons #\+ (make-instance 'simple-op :fn #'+ :help "add"))
+    (cons #\- (make-instance 'simple-op :fn #'- :help "subtract"))
+    (cons #\* (make-instance 'simple-op :fn #'* :help "multiply"))
+    (cons #\/ (make-instance 'coercing-op :fn #'divide-fn :arities '(2) :help "int or float div"))
+    (cons "abs" (make-instance 'simple-op :fn #'abs :arities '(1) :help "absolute value"))
+    (cons "exp" (make-instance 'simple-float-op :fn #'exp :arities '(1) :help "e^x"))
+    (cons "log" (make-instance 'simple-float-op :fn #'log :arities '(1 2) :help "ln(x) or log(x, base)"))
+    (cons "sqrt" (make-instance 'simple-float-op :fn #'sqrt :arities '(1) :help "square root"))
+    (cons #\% (make-instance 'simple-op :fn #'rem :help "remainder (C %)"))
+    (cons "mod" (make-instance 'simple-op :fn #'mod :help "euclidian modulus"))
+    (cons #\^ (make-instance 'simple-op :fn #'expt :help "exponent"))
+    (cons #\& (make-instance 'simple-op :fn #'logand :help "bitwise and"))
+    (cons #\| (make-instance 'simple-op :fn #'logior :help "bitwise or"))
+    (cons "xor" (make-instance 'simple-op :fn #'logxor :help "bitwise xor"))
+    (cons ">>" (make-instance 'simple-op :fn (lambda (a b) (ash a (- b))) :help "arithmatic right shift"))
+    (cons "<<" (make-instance 'simple-op :fn #'ash :help "arithmatic left shift"))
+    (make-fix-cast-op-entry nil 8)
+    (make-fix-cast-op-entry nil 16)
+    (make-fix-cast-op-entry nil 32)
+    (make-fix-cast-op-entry nil 64)
+    (make-fix-cast-op-entry t 8)
+    (make-fix-cast-op-entry t 16)
+    (make-fix-cast-op-entry t 32)
+    (make-fix-cast-op-entry t 64)
+    (cons "float" (make-instance 'numeric-op :fn #'float-cast :help "cast to float"))
+    (cons "ibase" *ibase-op*)
+    (cons "ib" *ibase-op*)
+    (cons "obase" *obase-op*)
+    (cons "ob" *obase-op*)
+    (cons "itype" *itype-op*)
+    (cons "it" *itype-op*)
+    (cons "help" *help-op*)
+    (cons "h" *help-op*)
+    (cons "vars" (make-instance 'op :fn #'show-vars :arities '(0) :help "print all variables"))))
 
 #+nil
 (eval-toplevel-string "xor(u8(0x0f), u8(0xaa))")
