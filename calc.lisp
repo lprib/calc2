@@ -457,6 +457,16 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 (parse (ast-top) "a=1+1")
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; ERROR/WARN REPORTING SYSTEM
+
+(define-condition calc-cond ()
+  ((msg :initarg :msg :reader calc-cond-msg))
+  (:report (lambda (cnd s) (format s "~a" (calc-cond-msg cnd)))))
+
+(define-condition calc-warning (calc-cond warning) ())
+(define-condition calc-error (calc-cond error) ())
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; VALUE/TYPE SYSTEM
 ;
 ; The type system is based on (class val). class flt are double-floats. class
@@ -547,20 +557,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 (defmethod same-type-new-value ((old flt) new-value)
   (flt new-value))
 
-(define-condition overflow (warning)
-  ((value :initarg :value :reader value)a
-   (context :initarg :context :reader context))
-  (:report (lambda (cond stream)
-             (format stream "value ~d overflowed ~a"
-                     (inner (value cond))
-                     (context cond)))))
-
-(defgeneric check-and-correct-overflow (n context)
+(defgeneric wrap-overflow (n context)
   (:documentation
     "n should class val. Checks if it's value fits in its type specifier or
      raises overflow warn. context is passed through to warning"))
-(defmethod check-and-correct-overflow (n context))
-(defmethod check-and-correct-overflow ((n fix) context)
+(defmethod wrap-overflow (n context))
+(defmethod wrap-overflow ((n fix) context)
   (when (not (eq (bitwidth n) :big))
     (let ((max-value
             (if (signed-p n)
@@ -572,20 +574,20 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                 0)))
       (cond
         ((> (inner n) max-value)
-         (warn 'overflow :value n :context context)
+         (warn 'calc-warning :msg (format nil "~a overflowed ~a" (inner n) context))
          (setf (inner n) (- (inner n) (expt 2 (bitwidth n)))))
         ((< (inner n) min-value)
-         (warn 'overflow :value n :context context)
+         (warn 'calc-warning :msg (format nil "~a overflowed ~a" (inner n) context))
          (setf (inner n) (+ (inner n) (expt 2 (bitwidth n)))))))))
 
 #+nil
-(check-and-correct-overflow
+(wrap-overflow
   (make-instance 'fix :inner 256 :signed nil :bitwidth 8) "")
 #+nil
-(check-and-correct-overflow
+(wrap-overflow
   (make-instance 'fix :inner 128 :signed t :bitwidth 8) "")
 #+nil
-(check-and-correct-overflow
+(wrap-overflow
   (make-instance 'fix :inner -129 :signed t :bitwidth 8) "")
 
 
@@ -611,8 +613,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
       (let* ((a (fix (inner a) either-signed max-bw))
              (b (fix (inner b) either-signed max-bw))
              (context (format nil "when coercing to ~a" (typename a))))
-        (check-and-correct-overflow a context)
-        (check-and-correct-overflow b context)
+        (wrap-overflow a context)
+        (wrap-overflow b context)
         (values a b)))))
 
 #+nil
@@ -754,15 +756,15 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
     'session
     :settings (make-instance 'settings)))
 
-(defun commit-result (input result-cons)
-  "result-cons, mentioned below, is (cons code result) where code can be :fail or
-  :result"
-  (push (make-instance 'history-entry
-                       :expr input
-                       :settings (copy-of (session-settings *session*))
-                       :state (car result-cons)
-                       :result (cdr result-cons))
-        (session-history *session*)))
+;(defun commit-result (input result-cons)
+;  "result-cons, mentioned below, is (cons code result) where code can be :fail or
+;  :result"
+;  (push (make-instance 'history-entry
+;                       :expr input
+;                       :settings (copy-of (session-settings *session*))
+;                       :state (car result-cons)
+;                       :result (cdr result-cons))
+;        (session-history *session*)))
 
 #+nil
 (read-session (to-readable-form *session*))
@@ -815,27 +817,19 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
           :settings (make-instance 'settings :ibase 10 :obase 10 :itype (fix 0 t 32)))))
   (eval-literal-atom '(1)))
 
-; TODO(liam) all of this wrap/unwrap could be replaced with thunks areound the
-; builtin functions
 (defun eval-fn (fn-expr)
   "Evaluate function call. returns result-cons (status . result)"
   (let* ((fn-name (caar fn-expr))
          (builtin (cdr (assoc fn-name *builtins* :test #'equalp))))
     (unless builtin
-      (return-from eval-fn
-                   (cons :fail
-                         (format nil "unknown function ~a" (string-upcase fn-name)))))
+      (error 'calc-error :msg (format nil "unknown function ~a" (string-upcase fn-name))))
     (let*
         ; Eval args if applicable. Eval all args first. Then seaerch for any
         ; :fail results. If there are, return (:fail . info) from that arg up
         ; the call stack
         ((args (if (builtin-eval builtin)
-                  (let* ((try-args (mapcar #'eval-expr (cdr fn-expr)))
-                         (first-error (find-if (lambda (a) (eq :fail (car a))) try-args)))
-                    (when first-error
-                      (return-from eval-fn first-error))
-                    (mapcar #'cdr try-args))
-                  (mapcar #'quote-expr (cdr fn-expr))))
+                   (mapcar #'eval-expr (cdr fn-expr))
+                   (mapcar #'quote-expr (cdr fn-expr))))
          ;coerce args if applicable
          (coerced-args
            (if (and (builtin-coerce builtin) (> (length args) 1))
@@ -856,10 +850,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
       ; If builtin takes quoted args, they will not be class val, dont check
       ; overflow
       (when (builtin-eval builtin)
-        (check-and-correct-overflow
+        (wrap-overflow
           wrapped-result
           (format nil "type ~a as part of ~a operation" (typename (first args)) fn-name)))
-      (cons :ok wrapped-result))))
+      wrapped-result)))
 
 #+nil
 (defparameter *egatom* (second (multiple-value-list (parse (expr) "69"))))
@@ -869,18 +863,14 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #+nil
 (eval-expr (second (multiple-value-list (parse (expr) "8+3"))))
 
-; TODO(liam) can we add another :ok-noreturn or something for things which
-; don't have a value? eg fn defs
 (defun eval-expr (node)
   "Eval node, where node can be
   1. number literal (99 start . end)
   2. function application ((fn start . end) (arg1 start . end) ...)
-  3. variable (varname start . end)
-
-  returns (code . result)"
+  3. variable (varname start . end)"
   (let ((left (car node)))
     (etypecase left
-      (number (cons :ok (eval-literal-atom node)))
+      (number (eval-literal-atom node))
       (list (eval-fn node))
       (string (eval-variable node)))))
 
@@ -889,12 +879,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
          ; first, try look var in var alist
          (val (assoc varname (session-vars *session*) :test #'string-equal)))
     (if val
-        (cons :ok (cdr val))
+        (cdr val)
         ; second, try to treat the var as a function with no args
         (let ((builtin (assoc varname *builtins* :test #'equalp)))
           (if (and builtin (builtin-allow-call-with-no-args (cdr builtin)))
               (eval-fn (list node)) ; Make a fn-call list with no args
-              (cons :fail (format nil "unknown variable ~a" (string-upcase varname))))))))
+              (error 'calc-error :msg (format nil "unknown variable ~a" (string-upcase varname))))))))
 
 (defun quote-expr (expr)
   "Strip away source mappings, but do not eval. Converts sourcemapped single
@@ -910,14 +900,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
     (:assign (assign-variable (caadr form) (caddr form)))))
 
 (defun assign-variable (varname expr)
-  (let ((eval-res (eval-expr expr)))
-    (when (eq (car eval-res) :ok)
-      (let ((val (cdr eval-res))
-            (pair (assoc varname (session-vars *session*) :test #'string-equal)))
-        (if pair
-            (setf (cdr pair) val)
-            (push (cons varname val) (session-vars *session*)))))
-    eval-res))
+  (let* ((val (eval-expr expr))
+         (pair (assoc varname (session-vars *session*) :test #'string-equal)))
+    (if pair
+        (setf (cdr pair) val)
+        (push (cons varname val) (session-vars *session*)))
+    val))
 
 #+nil
 (eval-ast-top (second (multiple-value-list (parse (ast-top) "a=809"))))
@@ -925,16 +913,15 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 (eval-ast-top (second (multiple-value-list (parse (ast-top) "b=4+5"))))
 
 (defun eval-toplevel-string (str)
-  "Parse string and evaluate. returns (code . result)"
+  "Parse string and evaluate. returns result"
   (multiple-value-bind (endi res) (parse (ast-top) str)
     (case res
-      (:fail (cons :fail "parse error"))
-      (otherwise (if (= endi (length str))
-                     (eval-ast-top res)
-                     (cons :fail
-                           (format nil "unexpected char ~c (at ~d)"
-                                   (elt str endi)
-                                   endi)))))))
+      (:fail (error 'calc-error :msg "parse error"))
+      (otherwise
+        (if (= endi (length str))
+            (eval-ast-top res)
+            (error 'calc-error :msg (format nil "unexpected char ~c (at ~d)" (elt str endi) endi)))))))
+
 
 #+nil
 (eval-toplevel-string "2.0+1")
@@ -1158,21 +1145,15 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 (defun eval-to-displayable (str)
   "parse and eval str. return (values result-val displayable-result warnings), where
   warnings is a list of warning strings returned during eval"
-  (let ((warnings (list)))
+  (let ((warnings nil))
     (handler-bind
-        ((warning (lambda (cnd)
-                   (push (with-output-to-string (strm) (princ cnd strm))
-                         warnings)
-                   (muffle-warning cnd))))
-      (let* ((res (eval-toplevel-string str))
-             (status (car res))
-             (value (cdr res)))
-        (values
-          value
-          (case status
-            (:ok (format nil "~a (~a)" (value-string value) (typename value)))
-            (:fail (if (plusp (length str)) value "")))
-          (nreverse warnings))))))
+        ((calc-warning (lambda (c) (push (format nil "~a" c) warnings) (muffle-warning c))))
+      (handler-case
+        (let* ((val (eval-toplevel-string str))
+               (val-display (format nil "~a (~a)" (value-string val) (typename val))))
+          (values val val-display (nreverse warnings)))
+        (calc-error (c)
+          (values nil (format nil "~a" c) nil))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; BITFIELD
